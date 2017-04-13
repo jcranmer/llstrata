@@ -1,0 +1,11 @@
+[package]
+name = "llvmmc"
+version = "0.1.0"
+authors = ["Joshua Cranmer <Pidgeot18@gmail.com>"]
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.23"
+gcc = "0.3"

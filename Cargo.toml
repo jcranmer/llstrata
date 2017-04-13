@@ -1,0 +1,10 @@
+[package]
+name = "llstrata"
+version = "0.0.1"
+authors = ["Joshua Cranmer <Pidgeot18@gmail.com>"]
+publish = false
+
+[dependencies]
+llvmmc = { version = "0.1.0", path = "llvm-mc" }
+
+[workspace]
