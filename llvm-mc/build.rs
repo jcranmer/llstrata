@@ -100,6 +100,8 @@ fn main() {
     .clang_arg("-x").clang_arg("c++").clang_arg("-std=c++14")
     .generate_inline_functions(true)
     .whitelisted_type("TargetTriple")
+    .whitelisted_type("llvm::MCOI::.*")
+    .whitelisted_type("llvm::MC(Instr|Register)Info")
     .opaque_type("std::string")
     .opaque_type("llvm::DenseMap")
     .opaque_type("llvm::DenseMapPair")

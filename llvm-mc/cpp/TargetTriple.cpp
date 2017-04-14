@@ -1,5 +1,6 @@
 #include <llvm/ADT/Triple.h>
 #include <llvm/MC/MCInstrInfo.h>
+#include <llvm/MC/MCRegisterInfo.h>
 #include <llvm/Support/TargetRegistry.h>
 #include <llvm/Support/TargetSelect.h>
 
@@ -24,6 +25,7 @@ TargetTriple::TargetTriple(const char *name, const char **err) {
   triple = nullptr;
   target = nullptr;
   mii = nullptr;
+  mri = nullptr;
 
   if (!initialized)
     initialize();
@@ -39,9 +41,11 @@ TargetTriple::TargetTriple(const char *name, const char **err) {
   }
 
   mii = target->createMCInstrInfo();
+  mri = target->createMCRegInfo(triple->str());
 }
 
 TargetTriple::~TargetTriple() {
   delete triple;
   delete mii;
+  delete mri;
 }
