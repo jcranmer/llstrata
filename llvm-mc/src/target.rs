@@ -6,7 +6,7 @@ use std::mem::transmute;
 use std::os::raw::{c_char, c_uint};
 use std::ptr;
 
-use self::cpp::llvm::MCOI::OperandType;
+use self::cpp::llvm::MCOI::OperandType as MCOperandType;
 
 pub struct TargetTriple {
   target: cpp::TargetTriple
@@ -81,6 +81,18 @@ impl TargetTriple {
       }
     }
   }
+
+    pub fn get_register_info(&self, index: u32) -> RegisterInfo {
+        let mri = self.mri();
+        unsafe {
+            let desc = mri.get(index).as_ref().unwrap();
+            return RegisterInfo {
+                name: CStr::from_ptr(mri.getName(index)).to_str()
+                    .expect("Register names should be ASCII"),
+                index: index
+            };
+        }
+    }
 }
 
 impl Drop for TargetTriple {
@@ -112,28 +124,39 @@ impl <'a> Instruction<'a> {
     unsafe {
       let desc = self.tt.mii().get(self.opcode).as_ref()
         .expect("Should not be null");
+      let num_defs = desc.NumDefs as isize;
       for i in 0..(desc.NumOperands as isize) {
         let op_info = desc.OpInfo.offset(i).as_ref()
           .expect("op_info should not be null");
-        let op_type : cpp::llvm::MCOI::OperandType =
-          transmute(op_info.OperandType as u32);
-        let constraints = op_info.Constraints;
-        let is_tied = constraints &
-          (1 << cpp::llvm::MCOI::OperandConstraint::TIED_TO as u32) != 0;
-        results.push(match op_type {
-          OperandType::OPERAND_UNKNOWN => OperandInfo::Unknown,
-          OperandType::OPERAND_IMMEDIATE => OperandInfo::Immediate,
-          OperandType::OPERAND_REGISTER => {
-            if is_tied {
-              OperandInfo::TiedRegister(((constraints >> 16) & 0xf) as u8)
-            } else {
-              OperandInfo::Register(op_info.RegClass as usize)
-            }
-          },
-          OperandType::OPERAND_MEMORY => OperandInfo::Mem,
-          OperandType::OPERAND_PCREL => OperandInfo::PCRel,
-          OperandType::OPERAND_FIRST_TARGET => OperandInfo::Unknown,
+        results.push(OperandInfo {
+            kind: OperandType::make_operand(op_info),
+            write: i < num_defs,
+            implicit: false
         });
+      }
+
+      let mut implicit_def = desc.ImplicitDefs;
+      while let Some(&num) = implicit_def.as_ref() {
+          if num == 0 { break; }
+          let reg_info = self.tt.get_register_info(num as u32);
+          results.push(OperandInfo {
+              kind: OperandType::FixedRegister(reg_info),
+              write: true,
+              implicit: true
+          });
+          implicit_def = implicit_def.offset(1);
+      }
+
+      let mut implicit_use = desc.ImplicitUses;
+      while let Some(&num) = implicit_use.as_ref() {
+          if num == 0 { break; }
+          let reg_info = self.tt.get_register_info(num as u32);
+          results.push(OperandInfo {
+              kind: OperandType::FixedRegister(reg_info),
+              write: false,
+              implicit: true
+          });
+          implicit_use = implicit_use.offset(1);
       }
     }
     return results;
@@ -147,18 +170,56 @@ impl <'a> fmt::Debug for Instruction<'a> {
 }
 
 #[derive(Debug)]
+pub struct RegisterInfo {
+    pub name: &'static str,
+    index: c_uint,
+}
+
+#[derive(Debug)]
 pub struct RegisterClass {
   pub name: &'static str,
   index: c_uint
 }
 
 #[derive(Debug)]
-pub enum OperandInfo {
+pub struct OperandInfo {
+    pub kind: OperandType,
+    pub write: bool,
+    pub implicit: bool
+}
+
+#[derive(Debug)]
+pub enum OperandType {
   Unknown,
   Register(usize),
   TiedRegister(u8),
+  FixedRegister(RegisterInfo),
   Immediate,
   PCRel,
   Mem,
+}
+
+impl OperandType {
+    fn make_operand(opinfo: &cpp::llvm::MCOperandInfo) -> OperandType {
+        let op_type : MCOperandType =
+            unsafe { transmute(opinfo.OperandType as u32) };
+        let constraints = opinfo.Constraints;
+        let is_tied = constraints &
+            (1 << cpp::llvm::MCOI::OperandConstraint::TIED_TO as u32) != 0;
+        return match op_type {
+            MCOperandType::OPERAND_UNKNOWN => OperandType::Unknown,
+            MCOperandType::OPERAND_IMMEDIATE => OperandType::Immediate,
+            MCOperandType::OPERAND_REGISTER => {
+                if is_tied {
+                    OperandType::TiedRegister(((constraints >> 16) & 0xf) as u8)
+                } else {
+                    OperandType::Register(opinfo.RegClass as usize)
+                }
+            },
+            MCOperandType::OPERAND_MEMORY => OperandType::Mem,
+            MCOperandType::OPERAND_PCREL => OperandType::PCRel,
+            MCOperandType::OPERAND_FIRST_TARGET => OperandType::Unknown,
+        };
+    }
 }
 

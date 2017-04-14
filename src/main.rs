@@ -1,8 +1,8 @@
 extern crate getopts;
 extern crate llvmmc;
 
-use getopts::{Matches, Options};
-use llvmmc::target::{OperandInfo, TargetTriple};
+use getopts::Options;
+use llvmmc::target::{OperandType, TargetTriple};
 use std::env;
 
 fn print_usage(prog: &str, opts: Options) {
@@ -46,9 +46,9 @@ fn main() {
 
     for inst in &tt.get_instructions() {
         // Ignore memory and control-flow instructions
-        if inst.get_operands().iter().any(|o| match o {
-            &OperandInfo::Mem => true,
-            &OperandInfo::PCRel => true,
+        if inst.get_operands().iter().any(|o| match o.kind {
+            OperandType::Mem => true,
+            OperandType::PCRel => true,
             _ => false}) {
             continue;
         }
@@ -57,12 +57,18 @@ fn main() {
         for op in inst.get_operands() {
             print!("{}", next_char);
             next_char = ", ";
-            if let OperandInfo::Register(num) = op {
+            if let OperandType::Register(num) = op.kind {
                 print!("{}", tt.get_register_class(num as u32).name);
-            } else if let OperandInfo::TiedRegister(index) = op {
+            } else if let OperandType::TiedRegister(index) = op.kind {
                 print!("={}", index);
+            } else if let OperandType::FixedRegister(reg) = op.kind {
+                print!("{}", reg.name);
             } else {
-                print!("{:?}", op);
+                print!("{:?}", op.kind);
+            }
+            print!("[{}]", if op.write { "def" } else { "use" });
+            if op.implicit {
+                print!(" (implicit)");
             }
         }
         println!("");
