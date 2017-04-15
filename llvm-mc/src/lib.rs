@@ -1,6 +1,11 @@
 mod bindgen;
+mod register;
+mod target_triple;
 
 pub mod target;
+
+pub use register::*;
+pub use target_triple::TargetTriple;
 
 #[cfg(test)]
 mod tests {

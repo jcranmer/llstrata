@@ -9,7 +9,8 @@ use std::ptr;
 use self::cpp::llvm::MCOI::OperandType as MCOperandType;
 
 pub struct TargetTriple {
-  target: cpp::TargetTriple
+    target: cpp::TargetTriple,
+    mri: super::RegisterInfo
 }
 
 impl TargetTriple {
@@ -26,21 +27,17 @@ impl TargetTriple {
           return Err(String::from("Couldn't convert error message"));
         }
       }
-      return Ok(TargetTriple {
-        target: tt
-      });
+      let result = TargetTriple {
+          mri: super::RegisterInfo::get(tt.mri.as_ref().unwrap()),
+          target: tt,
+      };
+      return Ok(result);
     }
   }
 
   fn mii(&self) -> &cpp::llvm::MCInstrInfo {
     unsafe {
       self.target.mii.as_ref().unwrap()
-    }
-  }
-
-  fn mri(&self) -> &cpp::llvm::MCRegisterInfo {
-    unsafe {
-      self.target.mri.as_ref().unwrap()
     }
   }
 
@@ -68,30 +65,12 @@ impl TargetTriple {
     return instrs;
   }
 
-  pub fn get_register_class(&self, index: u32) -> RegisterClass {
-    let mri = self.mri();
-    unsafe {
-      assert!(index < mri.getNumRegClasses(), "Illegal class index");
-      let regclass_ptr = mri.getRegClass(index);
-      let name = CStr::from_ptr(mri.getRegClassName(regclass_ptr))
-        .to_str().expect("Reg class names should be ASCII");
-      return RegisterClass {
-        name: name,
-        index: index
-      }
+    pub fn get_register_class(&self, index: u32) -> &super::RegisterClass {
+        &self.mri.get_register_classes()[index as usize]
     }
-  }
 
-    pub fn get_register_info(&self, index: u32) -> RegisterInfo {
-        let mri = self.mri();
-        unsafe {
-            let desc = mri.get(index).as_ref().unwrap();
-            return RegisterInfo {
-                name: CStr::from_ptr(mri.getName(index)).to_str()
-                    .expect("Register names should be ASCII"),
-                index: index
-            };
-        }
+    pub fn get_register_info(&self, index: u32) -> &super::Register {
+        &self.mri.get_registers()[index as usize - 1]
     }
 }
 
@@ -170,36 +149,24 @@ impl <'a> fmt::Debug for Instruction<'a> {
 }
 
 #[derive(Debug)]
-pub struct RegisterInfo {
-    pub name: &'static str,
-    index: c_uint,
-}
-
-#[derive(Debug)]
-pub struct RegisterClass {
-  pub name: &'static str,
-  index: c_uint
-}
-
-#[derive(Debug)]
-pub struct OperandInfo {
-    pub kind: OperandType,
+pub struct OperandInfo<'a> {
+    pub kind: OperandType<'a>,
     pub write: bool,
     pub implicit: bool
 }
 
 #[derive(Debug)]
-pub enum OperandType {
+pub enum OperandType<'a> {
   Unknown,
   Register(usize),
   TiedRegister(u8),
-  FixedRegister(RegisterInfo),
+  FixedRegister(&'a super::Register),
   Immediate,
   PCRel,
   Mem,
 }
 
-impl OperandType {
+impl <'a> OperandType<'a> {
     fn make_operand(opinfo: &cpp::llvm::MCOperandInfo) -> OperandType {
         let op_type : MCOperandType =
             unsafe { transmute(opinfo.OperandType as u32) };
