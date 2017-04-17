@@ -1,14 +1,29 @@
 extern crate getopts;
 extern crate llvmmc;
+extern crate serde_json;
+extern crate tempdir;
+
+mod state;
+mod stoke;
 
 use getopts::Options;
 use llvmmc::target::{OperandType, TargetTriple};
 use std::env;
+use std::fs::metadata;
+use std::path::Path;
+use std::process;
 
 fn print_usage(prog: &str, opts: Options) {
-    let brief = format!("Usage: {} [OPTIONS]
-    Infer specifications of instruction sets using LLVM and STOKE.", prog);
+    let brief = format!("Usage: {} [OPTIONS] MODE
+    Infer specifications of instruction sets using LLVM and STOKE.
+
+    MODE may be one of:
+      init   Initialize a working directory
+      status Show the status of the learning process
+      run    Run the program indefinitely
+      step   Try to learn a single instruction", prog);
     print!("{}", opts.usage(&brief));
+    process::exit(1);
 }
 
 fn main() {
@@ -31,46 +46,117 @@ fn main() {
         return;
     }
 
+    if matches.free.is_empty() {
+        println!("Error: missing mode parameter");
+        print_usage(&program, opts);
+        return;
+    }
+
+    let mode = &matches.free[0];
+
     // Load the triple, default to x86.
     // XXX: Should probably default to $HOST_CPU.
-    let triple_str = matches.opt_str("t")
-        .unwrap_or(String::from("x86_64-unknown-linux-gnu"));
-    let tt_wrapped = TargetTriple::get(&triple_str);
-    let tt = match tt_wrapped {
-        Err(s) => {
-            println!("Target {} is unknown: {}", triple_str, s);
-            return;
-        },
-        Ok(tt) => tt
+    //let triple_str = matches.opt_str("t")
+    //    .unwrap_or(String::from("x86_64-unknown-linux-gnu"));
+    //let tt_wrapped = TargetTriple::get(&triple_str);
+    //let tt = match tt_wrapped {
+    //    Err(s) => {
+    //        println!("Target {} is unknown: {}", triple_str, s);
+    //        return;
+    //    },
+    //    Ok(tt) => tt
+    //};
+
+    // Load the work directory for the state option.
+    let work_dir = if let Some(dir) = matches.opt_str("w") {
+        Path::new(&dir).to_path_buf()
+    } else {
+        let mut buf = env::home_dir().expect("Cannot find home directory");
+        buf.push("dev");
+        buf.push("output-strata");
+        buf
     };
 
-    for inst in &tt.get_instructions() {
-        // Ignore memory and control-flow instructions
-        if inst.get_operands().iter().any(|o| match o.kind {
-            OperandType::Mem => true,
-            OperandType::PCRel => true,
-            _ => false}) {
-            continue;
+    if mode == "init" {
+        unimplemented!();
+    } else {
+        if let Err(err) = metadata(&work_dir) {
+          println!("Error reading working directory {:?}: {}", work_dir, err);
+          process::exit(1);
         }
-        print!("{}", inst.get_name());
-        let mut next_char = " ";
-        for op in inst.get_operands() {
-            print!("{}", next_char);
-            next_char = ", ";
-            if let OperandType::Register(num) = op.kind {
-                print!("{}", tt.get_register_class(num as u32).name);
-            } else if let OperandType::TiedRegister(index) = op.kind {
-                print!("={}", index);
-            } else if let OperandType::FixedRegister(reg) = op.kind {
-                print!("{}", reg.name);
-            } else {
-                print!("{:?}", op.kind);
-            }
-            print!("[{}]", if op.write { "def" } else { "use" });
-            if op.implicit {
-                print!(" (implicit)");
-            }
-        }
-        println!("");
     }
+
+    let mut state = state::State::load(work_dir);
+
+    match mode.as_ref() {
+        "status" => {
+            status(&mut state);
+        },
+        "run" => unimplemented!(),
+        "step" => {
+            step(&mut state);
+        },
+        _ => {
+            println!("Unknown command {}", mode);
+            print_usage(&program, opts);
+            return;
+        }
+    }
+
+    //for inst in &tt.get_instructions() {
+    //    // Ignore memory and control-flow instructions
+    //    if inst.get_operands().iter().any(|o| match o.kind {
+    //        OperandType::Mem => true,
+    //        OperandType::PCRel => true,
+    //        _ => false}) {
+    //        continue;
+    //    }
+    //    print!("{}", inst.get_name());
+    //    let mut next_char = " ";
+    //    for op in inst.get_operands() {
+    //        print!("{}", next_char);
+    //        next_char = ", ";
+    //        if let OperandType::Register(num) = op.kind {
+    //            print!("{}", tt.get_register_class(num as u32).name);
+    //        } else if let OperandType::TiedRegister(index) = op.kind {
+    //            print!("={}", index);
+    //        } else if let OperandType::FixedRegister(reg) = op.kind {
+    //            print!("{}", reg.name);
+    //        } else {
+    //            print!("{:?}", op.kind);
+    //        }
+    //        print!("[{}]", if op.write { "def" } else { "use" });
+    //        if op.implicit {
+    //            print!(" (implicit)");
+    //        }
+    //    }
+    //    println!("");
+    //}
+}
+
+fn status(state: &mut state::State) {
+    let base = state.get_instructions(state::InstructionState::Base).len();
+    let success = state.get_instructions(state::InstructionState::Success).len() - base;
+    let partial = state.get_instructions(state::InstructionState::PartialSuccess).len();
+    let unsolved = state.get_instructions(state::InstructionState::Unsolved).len();
+    let total = (base + success + partial + unsolved) as f64 / 100f64;
+    println!("Instruction information");
+    println!("═══════════════════════");
+    println!("       Base set: {:>5} {:>5.2}%", base, base as f64 / total);
+    println!("        Success: {:>5} {:>5.2}%", success, success as f64 / total);
+    println!("Partial success: {:>5} {:>5.2}%", partial, partial as f64 / total);
+    println!("  Failed search: ????????????");
+    println!("      Remaining: {:>5} {:>5.2}%", unsolved, unsolved as f64 / total);
+    println!("");
+    println!("Elapsed time");
+    println!("════════════");
+    println!("Wall-clock time: <unknown>");
+    println!("       CPU time: <unknown>");
+}
+
+fn step(state: &mut state::State) {
+    let instrs = state.get_instructions(state::InstructionState::Unsolved);
+    let setnae = instrs.iter().find(|&inst| inst.opcode == "setnae_rh")
+        .expect("Blah blah");
+    stoke::search_instruction(state, &setnae);
 }

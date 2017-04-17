@@ -117,6 +117,10 @@ impl fmt::Display for RegisterClass {
     }
 }
 
+/// The information pertaining to an architectural register.
+///
+/// Note that registers might be contained within one another (e.g., AX in EAX),
+/// and each of these containment relations warrants an instance of this class.
 #[derive(Eq)]
 pub struct Register {
     /// The name of the register, e.g., RAX.
