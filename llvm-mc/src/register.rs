@@ -79,7 +79,7 @@ impl RegisterInfo {
 
 /// A class of registers, for example, the set of general-purpose 32-bit
 /// registers, or the set of x87 floating point stack registers.
-#[derive(Debug)]
+#[derive(Eq)]
 pub struct RegisterClass {
     /// The name of the register class, e.g., GP32.
     pub name: &'static str,
@@ -111,9 +111,21 @@ impl RegisterClass {
     }
 }
 
+impl PartialEq for RegisterClass {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.name == rhs.name
+    }
+}
+
 impl fmt::Display for RegisterClass {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.name)
+    }
+}
+
+impl fmt::Debug for RegisterClass {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "RegisterClass({})", self.name)
     }
 }
 

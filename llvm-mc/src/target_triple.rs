@@ -3,6 +3,7 @@ use super::bindgen::root as cpp;
 use std::ffi::{CStr, CString};
 use std::ptr;
 
+use super::instructions::InstructionDesc;
 use super::register::RegisterInfo;
 
 /// A representation of an architecture in LLVM.
@@ -12,14 +13,15 @@ use super::register::RegisterInfo;
 /// of the MC interfaces.
 ///
 /// [1]: http://www.llvm.org/docs/doxygen/html/classllvm_1_1Target.html
-pub struct TargetTriple {
+pub struct TargetTriple<'a> {
     //XXX: set the triple somehow.
     //triple: String,
     //target: cpp::TargetTriple,
-    mri: RegisterInfo
+    mri: RegisterInfo,
+    instructions: Vec<InstructionDesc<'a>>,
 }
 
-impl TargetTriple {
+impl <'a> TargetTriple<'a> {
     /// Return a TargetTriple for the given triple string. The triple is used to
     /// search for the target according to LLVM's tables; note that the
     /// architecture itself (e.g., ```amd64```) is sufficient to get an
@@ -37,17 +39,31 @@ impl TargetTriple {
                     _ => "Unknown error message"
                 }));
             }
-            let result = TargetTriple {
+            let mut result = TargetTriple {
                 //triple: Default::default(),
                 mri: RegisterInfo::get(tt.mri.as_ref().unwrap()),
+                instructions: Vec::new(),
                 //target: tt,
             };
+            let mii = tt.mii.as_ref().unwrap();
+            for i in 0..mii.getNumOpcodes() {
+                let name = CStr::from_ptr(mii.getName(i))
+                    .to_str().expect("Register names should be ASCII");
+                result.instructions.push(InstructionDesc::new(
+                    mii.get(i).as_ref().unwrap(), name, &result.mri));
+            }
             return Ok(result);
         }
     }
 
+    /// Get the register information for this target.
     pub fn register_info(&self) -> &RegisterInfo {
         &self.mri
+    }
+
+    /// Get the list of instruction opcodes for this target.
+    pub fn instructions(&self) -> &Vec<InstructionDesc> {
+        &self.instructions
     }
 }
 

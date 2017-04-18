@@ -7,7 +7,6 @@ mod state;
 mod stoke;
 
 use getopts::Options;
-use llvmmc::target::{OperandType, TargetTriple};
 use std::env;
 use std::fs::metadata;
 use std::path::Path;
@@ -102,36 +101,6 @@ fn main() {
             return;
         }
     }
-
-    //for inst in &tt.get_instructions() {
-    //    // Ignore memory and control-flow instructions
-    //    if inst.get_operands().iter().any(|o| match o.kind {
-    //        OperandType::Mem => true,
-    //        OperandType::PCRel => true,
-    //        _ => false}) {
-    //        continue;
-    //    }
-    //    print!("{}", inst.get_name());
-    //    let mut next_char = " ";
-    //    for op in inst.get_operands() {
-    //        print!("{}", next_char);
-    //        next_char = ", ";
-    //        if let OperandType::Register(num) = op.kind {
-    //            print!("{}", tt.get_register_class(num as u32).name);
-    //        } else if let OperandType::TiedRegister(index) = op.kind {
-    //            print!("={}", index);
-    //        } else if let OperandType::FixedRegister(reg) = op.kind {
-    //            print!("{}", reg.name);
-    //        } else {
-    //            print!("{:?}", op.kind);
-    //        }
-    //        print!("[{}]", if op.write { "def" } else { "use" });
-    //        if op.implicit {
-    //            print!(" (implicit)");
-    //        }
-    //    }
-    //    println!("");
-    //}
 }
 
 fn status(state: &mut state::State) {
