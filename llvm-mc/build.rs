@@ -102,11 +102,14 @@ fn main() {
     .whitelisted_type("TargetTriple")
     .whitelisted_type("llvm::MCOI::.*")
     .whitelisted_type("llvm::MC(Instr|Register)Info")
+    .whitelisted_type("llvm::MCInst")
     .opaque_type("std::string")
     .opaque_type("llvm::DenseMap")
     .opaque_type("llvm::DenseMapPair")
+    .opaque_type("llvm::SmallVector.*")
     .hide_type("llvm::DenseMap_BaseT")
-    .raw_line("#[allow(dead_code)]")
+    // This is a bug in the Rust compiler, as I understand it.
+    .raw_line("#[allow(dead_code,improper_ctypes)]")
     .generate().expect("Unable to generate bindings");
   bindings.write_to_file(Path::new(&out_dir).join("bindings.rs"))
     .expect("Couldn't write bindings");

@@ -1,9 +1,11 @@
 use super::bindgen::root as cpp;
 
 use std::ffi::{CStr, CString};
+use std::mem::transmute;
 use std::ptr;
 
 use super::instructions::InstructionDesc;
+use super::mcinst;
 use super::register::RegisterInfo;
 
 /// A representation of an architecture in LLVM.
@@ -16,7 +18,7 @@ use super::register::RegisterInfo;
 pub struct TargetTriple<'a> {
     //XXX: set the triple somehow.
     //triple: String,
-    //target: cpp::TargetTriple,
+    target: cpp::TargetTriple,
     mri: RegisterInfo,
     instructions: Vec<InstructionDesc<'a>>,
 }
@@ -43,9 +45,9 @@ impl <'a> TargetTriple<'a> {
                 //triple: Default::default(),
                 mri: RegisterInfo::get(tt.mri.as_ref().unwrap()),
                 instructions: Vec::new(),
-                //target: tt,
+                target: tt,
             };
-            let mii = tt.mii.as_ref().unwrap();
+            let mii = result.target.mii.as_ref().unwrap();
             for i in 0..mii.getNumOpcodes() {
                 let name = CStr::from_ptr(mii.getName(i))
                     .to_str().expect("Register names should be ASCII");
@@ -65,7 +67,45 @@ impl <'a> TargetTriple<'a> {
     pub fn instructions(&self) -> &Vec<InstructionDesc> {
         &self.instructions
     }
+
+    /// Parse an assembly file into a list of instructions.
+    ///
+    /// This is not necessarily a good representation of an assembly file, but
+    /// it is sufficient for immediate needs. Actually reflecting a more
+    /// general representation of a parser would involve having to reflect
+    /// large portions of the LLVM MC backend for sufficient information.
+    pub fn parse_instructions(&'a self, cpu: &str, features: &str,
+                              file_name: &str) -> Vec<mcinst::Instruction<'a>> {
+        let mut insts = Vec::new();
+        unsafe {
+            let sti = self.target.getSTI(cpp::llvm::StringRef::from(cpu),
+                cpp::llvm::StringRef::from(features));
+            let mut closure = |inst: *const cpp::llvm::MCInst| {
+                let concrete = mcinst::make_instruction(
+                    inst.as_ref().unwrap(), self);
+                insts.push(concrete);
+            };
+            self.parse_file(sti, file_name, &Closure(&mut closure));
+        }
+        return insts;
+    }
+
+    fn parse_file(&self, sti: *const cpp::llvm::MCSubtargetInfo, file_name: &str, closure: &Closure) {
+        unsafe {
+            self.target.parseAsmFile(sti, cpp::llvm::StringRef::from(file_name),
+              Some(TargetTriple::callback), transmute(closure));
+        }
+    }
+
+    extern "C" fn callback(inst: *const cpp::llvm::MCInst, closure: *const cpp::RustClosure) {
+        unsafe {
+            let rust_fn: *mut Closure = transmute(closure);
+            rust_fn.as_mut().expect("How did you become null?").0(inst);
+        }
+    }
 }
+
+struct Closure<'a>(&'a mut FnMut(*const cpp::llvm::MCInst) -> ());
 
 
 #[cfg(test)]

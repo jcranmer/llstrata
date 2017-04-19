@@ -103,6 +103,12 @@ impl <'a> fmt::Display for InstructionDesc<'a> {
     }
 }
 
+impl <'a> fmt::Debug for InstructionDesc<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "InstructionDesc({})", self.name)
+    }
+}
+
 /// An operand for an instruction.
 ///
 /// This class sort of corresponds to LLVM's [MCOperandInfo][1], but only
