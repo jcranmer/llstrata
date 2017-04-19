@@ -4,10 +4,10 @@
 #include <llvm/MC/MCInstrInfo.h>
 #include <llvm/MC/MCObjectFileInfo.h>
 #include <llvm/MC/MCParser/MCAsmParser.h>
+#include <llvm/MC/MCParser/MCTargetAsmParser.h>
 #include <llvm/MC/MCRegisterInfo.h>
 #include <llvm/MC/MCStreamer.h>
 #include <llvm/MC/MCSubtargetInfo.h>
-#include <llvm/MC/MCTargetAsmParser.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/TargetRegistry.h>
