@@ -145,7 +145,11 @@ pub struct Register {
     pub dwarf_eh_num: Option<u32>,
 
     sub_regs: Vec<usize>,
-    super_regs: Vec<usize>
+    super_regs: Vec<usize>,
+
+    /// A list of (offset, size) pairs for the subregisters in this register.
+    /// The numbers are bit indexes, with offset starting from LSB.
+    reg_slices: Vec<(u32, u32)>
 }
 
 fn map_dwarf_num(num: c_int) -> Option<u32> {
@@ -162,7 +166,7 @@ impl Register {
         unsafe {
             // LLVM does not make it easy to get the list of subregisters or the
             // list of super registers. So, we'll instead do this the hard way.
-            let sub_regs = (1..mri.getNumRegs())
+            let sub_regs : Vec<usize> = (1..mri.getNumRegs())
                 .filter(|&i| mri.isSubRegister(num, i))
                 .map(|i| (i - 1) as usize)
                 .collect();
@@ -171,12 +175,18 @@ impl Register {
                 .map(|i| (i - 1) as usize)
                 .collect();
 
+            let slice = sub_regs.iter()
+                .map(|r| mri.getSubRegIndex(num, (r + 1) as u32))
+                .map(|i| (mri.getSubRegIdxOffset(i), mri.getSubRegIdxSize(i)))
+                .collect();
+
             Register {
                 name: name,
                 dwarf_num: map_dwarf_num(mri.getDwarfRegNum(num, false)),
                 dwarf_eh_num: map_dwarf_num(mri.getDwarfRegNum(num, true)),
                 sub_regs: sub_regs,
-                super_regs: super_regs
+                super_regs: super_regs,
+                reg_slices: slice
             }
         }
     }
@@ -185,6 +195,17 @@ impl Register {
     pub fn get_sub_registers<'a>(&self, reg_info: &'a RegisterInfo) ->
           Vec<&'a Register> {
         self.sub_regs.iter().map(|&r| &reg_info.registers[r]).collect()
+    }
+
+    /// Returns the bit-level (offset, size) of the subregister within this
+    /// register, if it is indeed a sub register. Note that offsets are
+    /// measured from the least-significant-bit (e.g., AL is at offset 0 in
+    /// EAX).
+    pub fn get_sub_register_slice(&self, register: &Register,
+                                  reg_info: &RegisterInfo) -> Option<(u32, u32)> {
+        self.sub_regs.iter()
+            .position(|&r| reg_info.registers[r].name == register.name)
+            .map(|index| self.reg_slices[index])
     }
 
     /// Get all registers that this register is a part of.
@@ -367,5 +388,17 @@ mod tests {
             "ZMM15", "ZMM16", "ZMM17", "ZMM18", "ZMM19", "ZMM20", "ZMM21",
             "ZMM22", "ZMM23", "ZMM24", "ZMM25", "ZMM26", "ZMM27", "ZMM28",
             "ZMM29", "ZMM30", "ZMM31"]));
+
+        let rax = mri.get_register("RAX").unwrap();
+        assert_eq!(rax.get_sub_register_slice(
+                mri.get_register("AL").unwrap(), mri), Some((0, 8)));
+        assert_eq!(rax.get_sub_register_slice(
+                mri.get_register("AH").unwrap(), mri), Some((8, 8)));
+        assert_eq!(rax.get_sub_register_slice(
+                mri.get_register("AX").unwrap(), mri), Some((0, 16)));
+        assert_eq!(rax.get_sub_register_slice(
+                mri.get_register("EAX").unwrap(), mri), Some((0, 32)));
+        assert_eq!(rax.get_sub_register_slice(
+                mri.get_register("EBX").unwrap(), mri), None);
     }
 }

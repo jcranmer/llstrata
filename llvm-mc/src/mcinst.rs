@@ -30,7 +30,6 @@ pub fn make_instruction<'a>(inst: &llvm::MCInst, tt: &'a TargetTriple) -> Instru
             opcode: &tt.instructions()[inst.getOpcode() as usize],
             operands: operands
         };
-        println!("{:?}", concrete);
         return concrete;
     }
 }
