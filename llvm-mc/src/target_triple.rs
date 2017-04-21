@@ -3,10 +3,13 @@ use super::bindgen::root as cpp;
 use std::ffi::{CStr, CString};
 use std::mem::transmute;
 use std::ptr;
+use std::sync::{Once, ONCE_INIT};
 
 use super::instructions::InstructionDesc;
 use super::mcinst;
 use super::register::RegisterInfo;
+
+static START: Once = ONCE_INIT;
 
 /// A representation of an architecture in LLVM.
 ///
@@ -30,6 +33,12 @@ impl <'a> TargetTriple<'a> {
     /// instance. If no information can be found for that triple, return a
     /// string describing the error message instead.
     pub fn get(name: &str) -> Result<TargetTriple, String> {
+        START.call_once(|| {
+            unsafe {
+                cpp::TargetTriple::initializeLLVM();
+            }
+        });
+
         let safe_name = CString::new(name).expect("Need \\0 byte");
         unsafe {
             let mut err = ptr::null();

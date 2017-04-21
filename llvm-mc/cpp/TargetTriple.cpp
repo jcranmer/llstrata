@@ -20,14 +20,12 @@
 
 using namespace llvm;
 
-bool initialized = false;
-static void initialize() {
+void TargetTriple::initializeLLVM() {
   InitializeAllTargetInfos();
   InitializeAllTargets();
   InitializeAllTargetMCs();
   InitializeAllAsmParsers();
   InitializeAllDisassemblers();
-  initialized = true;
 }
 
 TargetTriple::TargetTriple(const char *name, const char **err) {
@@ -36,8 +34,6 @@ TargetTriple::TargetTriple(const char *name, const char **err) {
   mii = nullptr;
   mri = nullptr;
 
-  if (!initialized)
-    initialize();
   triple = new Triple(Triple::normalize(name));
   std::string err_str;
   target = TargetRegistry::lookupTarget("", *triple, err_str);

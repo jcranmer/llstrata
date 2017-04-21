@@ -21,6 +21,8 @@ public:
   TargetTriple(const char *triple, const char **err);
   ~TargetTriple();
 
+  static void initializeLLVM();
+
   llvm::MCInstrInfo *getMII() const { return mii; }
   llvm::MCRegisterInfo *getMRI() const { return mri; }
   llvm::MCSubtargetInfo *getSTI(llvm::StringRef CPU,

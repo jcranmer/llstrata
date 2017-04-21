@@ -133,7 +133,7 @@ impl fmt::Debug for RegisterClass {
 ///
 /// Note that registers might be contained within one another (e.g., AX in EAX),
 /// and each of these containment relations warrants an instance of this class.
-#[derive(Eq)]
+#[derive(Eq, Hash)]
 pub struct Register {
     /// The name of the register, e.g., RAX.
     pub name: &'static str,
@@ -212,6 +212,16 @@ impl Register {
     pub fn get_super_registers<'a>(&self, reg_info: &'a RegisterInfo) ->
           Vec<&'a Register> {
         self.super_regs.iter().map(|&r| &reg_info.registers[r]).collect()
+    }
+
+    /// Get the top-level register that contains this register.
+    pub fn get_top_register<'a>(&'a self,
+                                reg_info: &'a RegisterInfo) -> &'a Register {
+        if self.super_regs.is_empty() {
+            return self;
+        }
+        return reg_info.registers[self.super_regs[0]]
+            .get_top_register(reg_info);
     }
 }
 
@@ -365,6 +375,7 @@ mod tests {
         assert_eq!(reg.name, "EAX");
         assert!(reg.dwarf_num.is_none());
         assert_eq!(mri.get_register("RAX").unwrap().dwarf_num.unwrap(), 0);
+        assert_eq!(reg.get_top_register(mri).name, "RAX");
 
         // Test sub/super register support.
         assert_eq!(reg.get_sub_registers(mri), reg_list(mri, vec![
