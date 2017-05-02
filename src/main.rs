@@ -1,12 +1,16 @@
 extern crate getopts;
 extern crate llvmmc;
+extern crate llvm;
+extern crate llvm_sys;
 extern crate serde_json;
 extern crate tempdir;
 
+mod mcsema;
 mod state;
 mod stoke;
 
 use getopts::Options;
+use llvmmc::TargetTriple;
 use std::env;
 use std::fs::metadata;
 use std::path::Path;
@@ -17,10 +21,11 @@ fn print_usage(prog: &str, opts: Options) {
     Infer specifications of instruction sets using LLVM and STOKE.
 
     MODE may be one of:
-      init   Initialize a working directory
-      status Show the status of the learning process
-      run    Run the program indefinitely
-      step   Try to learn a single instruction", prog);
+      init     Initialize a working directory
+      status   Show the status of the learning process
+      generate Generate MCSema lifiting code for the known instructions
+      run      Run the program indefinitely
+      step     Try to learn a single instruction", prog);
     print!("{}", opts.usage(&brief));
     process::exit(1);
 }
@@ -55,16 +60,16 @@ fn main() {
 
     // Load the triple, default to x86.
     // XXX: Should probably default to $HOST_CPU.
-    //let triple_str = matches.opt_str("t")
-    //    .unwrap_or(String::from("x86_64-unknown-linux-gnu"));
-    //let tt_wrapped = TargetTriple::get(&triple_str);
-    //let tt = match tt_wrapped {
-    //    Err(s) => {
-    //        println!("Target {} is unknown: {}", triple_str, s);
-    //        return;
-    //    },
-    //    Ok(tt) => tt
-    //};
+    let triple_str = matches.opt_str("t")
+        .unwrap_or(String::from("x86_64-unknown-linux-gnu"));
+    let tt_wrapped = TargetTriple::get(&triple_str);
+    let tt = match tt_wrapped {
+        Err(s) => {
+            println!("Target {} is unknown: {}", triple_str, s);
+            return;
+        },
+        Ok(tt) => tt
+    };
 
     // Load the work directory for the state option.
     let work_dir = if let Some(dir) = matches.opt_str("w") {
@@ -85,7 +90,7 @@ fn main() {
         }
     }
 
-    let mut state = state::State::load(work_dir);
+    let mut state = state::State::load(work_dir, &tt);
 
     match mode.as_ref() {
         "status" => {
@@ -94,6 +99,9 @@ fn main() {
         "run" => unimplemented!(),
         "step" => {
             step(&mut state);
+        },
+        "generate" => {
+            generate(&state);
         },
         _ => {
             println!("Unknown command {}", mode);
@@ -128,4 +136,17 @@ fn step(state: &mut state::State) {
     let setnae = instrs.iter().find(|&inst| inst.opcode == "setnae_rh")
         .expect("Blah blah");
     stoke::search_instruction(state, &setnae);
+}
+
+fn generate(state: &state::State) {
+    let base = state.get_instructions(state::InstructionState::Base);
+    let translation_state = mcsema::TranslationState::new(state);
+    for inst in state.get_instructions(state::InstructionState::Success) {
+        if base.iter().any(|i| *i == inst) {
+            continue;
+        }
+        mcsema::translate_instruction(&inst, state, &translation_state, state.get_target_triple());
+        break;
+    }
+    mcsema::write_translations(&translation_state, Path::new("/dev/stdout"));
 }

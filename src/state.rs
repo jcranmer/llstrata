@@ -1,22 +1,40 @@
+use llvm::{CBox, Context};
+use llvmmc::{Instruction, TargetTriple};
 use serde_json;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
-pub struct State {
-    path: PathBuf
+pub struct State<'a> {
+    llvm_ctx: CBox<Context>,
+    path: PathBuf,
+    tt: &'a TargetTriple<'a>,
+    cache: RefCell<HashMap<String, InstructionInfo>>
 }
 
-impl State {
-    pub fn load(path: PathBuf) -> State {
+impl <'a> State<'a> {
+    pub fn load(path: PathBuf, tt: &'a TargetTriple) -> State<'a> {
         State {
-            path: path
+            llvm_ctx: Context::new(),
+            path: path,
+            tt: tt,
+            cache: Default::default()
         }
+    }
+
+    pub fn get_llvm_context(&self) -> &Context {
+        return &self.llvm_ctx;
     }
 
     pub fn get_workdir(&self) -> PathBuf {
         self.path.clone()
+    }
+
+    pub fn get_target_triple(&self) -> &TargetTriple {
+        self.tt
     }
 
     pub fn get_instructions(&self,
@@ -35,10 +53,40 @@ impl State {
             .lines();
         let mut instrs = Vec::new();
         for opcode in contents {
-            instrs.push(InstructionInfo::load(&opcode.unwrap(), &self));
+            let name = opcode.unwrap();
+            // Some instructions are broken according to LLVM's assembler.
+            // Don't bother with these (they're just NOPs anyhow).
+            match &name as &str {
+                "nopl_r32" | "nopw_r16" => continue,
+                "vcvtdq2pd_ymm_ymm" => continue,
+                _ => {}
+            };
+            instrs.push(InstructionInfo::load(&name, &self));
         }
         return instrs;
     }
+
+    pub fn get_info(&self, mcinst: &Instruction) -> Option<InstructionInfo> {
+        if self.cache.borrow().is_empty() {
+            let instrs = self.get_instructions(InstructionState::Success);
+            for inst in instrs {
+                let base = self.tt.parse_instructions("", "",
+                                                 inst.get_inst_file(self).to_str().unwrap());
+                if base.is_empty() {
+                    println!("We need to add info for {}", inst.opcode);
+                    continue;
+                }
+                assert!(base.len() == 2, "We expect the instruction file to have little");
+                assert!(base[base.len() - 1].opcode.is_return());
+
+                self.cache.borrow_mut()
+                    .insert(String::from(base[0].opcode.name), inst);
+            }
+        }
+
+        return self.cache.borrow().get(mcinst.opcode.name)
+            .map(|ii| ii.clone());
+    } 
 }
 
 pub enum InstructionState {
@@ -48,6 +96,7 @@ pub enum InstructionState {
     Unsolved
 }
 
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub struct InstructionInfo {
     pub opcode: String,
     pub def_in: String,
@@ -82,5 +131,27 @@ impl InstructionInfo {
         file.push(&self.opcode);
         file.push(format!("{}.s", &self.opcode));
         return file;
+    }
+
+    pub fn get_circuit_file(&self, state: &State) -> PathBuf {
+        let mut file = state.path.clone();
+        file.push("circuits");
+        file.push(format!("{}.s", &self.opcode));
+        return file;
+    }
+
+    pub fn get_reg_names(&self, write: bool) -> Vec<&str> {
+        let name_str = if write { &self.live_out } else { &self.def_in };
+        return name_str[1..name_str.len() - 1].split_whitespace()
+            .map(|n| &n[1..])
+            .collect();
+    }
+
+    pub fn get_flag_names(&self, write: bool) -> Vec<&str> {
+        let names = ["cf", "af", "pf", "zf", "sf", "of"];
+        return self.get_reg_names(write).iter()
+            .filter(|n| names.contains(n))
+            .map(|n| *n)
+            .collect();
     }
 }
