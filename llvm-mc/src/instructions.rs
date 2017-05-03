@@ -152,6 +152,12 @@ impl <'a> InstructionOperand<'a> {
             },
             MCOperandType::OPERAND_MEMORY => OperandType::Memory,
             MCOperandType::OPERAND_PCREL => OperandType::PCRel,
+            MCOperandType::OPERAND_FIRST_GENERIC |
+            MCOperandType::OPERAND_GENERIC_1 |
+            MCOperandType::OPERAND_GENERIC_2 |
+            MCOperandType::OPERAND_GENERIC_3 |
+            MCOperandType::OPERAND_GENERIC_4 |
+            MCOperandType::OPERAND_GENERIC_5 |
             MCOperandType::OPERAND_FIRST_TARGET => OperandType::Unknown,
         };
 

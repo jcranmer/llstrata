@@ -8,3 +8,14 @@ impl <'a> From<&'a str> for root::llvm::StringRef {
         }
     }
 }
+
+use std::{slice, str};
+
+impl root::llvm::StringRef {
+    pub fn as_str<'a>(&self) -> Result<&'a str, str::Utf8Error> {
+        unsafe {
+            str::from_utf8(slice::from_raw_parts(
+                    self.data as *const u8, self.length))
+        }
+    }
+}

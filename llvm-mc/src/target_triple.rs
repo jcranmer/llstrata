@@ -58,8 +58,8 @@ impl <'a> TargetTriple<'a> {
             };
             let mii = result.target.mii.as_ref().unwrap();
             for i in 0..mii.getNumOpcodes() {
-                let name = CStr::from_ptr(mii.getName(i))
-                    .to_str().expect("Register names should be ASCII");
+                let name = mii.getName(i).as_str()
+                    .expect("Register names should be ASCII");
                 result.instructions.push(InstructionDesc::new(
                     mii.get(i).as_ref().unwrap(), name, &result.mri));
             }

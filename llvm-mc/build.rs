@@ -51,7 +51,7 @@ fn with_components<S: AsRef<OsStr>>(args: &[S]) -> Vec<OsString> {
 
 fn build_cpp_files() {
   let version = llvm_config_str(&["--version"]);
-  if !version.starts_with("3.9.") && !version.starts_with("4.0.") && version != "5.0.0svn" {
+  if !version.starts_with("4.0.") && version != "5.0.0svn" {
     panic!("unsupported LLVM version: {}", version);
   }
   let libkind = llvm_config_str(&with_components(&["--shared-mode"]));
