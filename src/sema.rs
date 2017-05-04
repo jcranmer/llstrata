@@ -1,5 +1,6 @@
 use llvm::*;
 use llvmmc::TargetTriple;
+use mcsema::TranslationState;
 use state::InstructionInfo;
 use std::collections::HashMap;
 
@@ -157,7 +158,7 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
 
 
 pub fn add_base_programs(module: &Module, builder: &Builder,
-                         tt: &TargetTriple) {
+                         state: &TranslationState, tt: &TargetTriple) {
     unsafe {
         let ptr_module : *const Module = module;
         INTRINSIC_BASE = ptr_module.as_ref();
@@ -165,8 +166,7 @@ pub fn add_base_programs(module: &Module, builder: &Builder,
     let base_instrs = get_base_instructions();
     for (_, base_info) in base_instrs {
         let inst = tt.parse_instructions("", "", base_info.sample);
-        let func = module.get_function(inst[0].opcode.name)
-            .expect("Could not find the function for the opcode");
+        let func = state.get_function(&inst[0]);
         (base_info.build_llvm)(func, builder);
     }
     unsafe {

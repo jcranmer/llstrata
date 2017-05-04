@@ -2,14 +2,34 @@ use llvm::*;
 use llvmmc::*;
 use llvm_sys::LLVMModule;
 use sema::*;
-use state::{InstructionInfo, State};
+use state::{InstructionInfo, InstructionState, State};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-extern {
-    fn write_file(module: *const LLVMModule, file_name: *const i8);
+#[repr(C)]
+struct StringRef {
+    data: *const u8,
+    len: usize
+}
+
+fn get_string(string: &str) -> StringRef {
+    StringRef {
+        data: string.as_ptr(),
+        len: string.len()
+    }
+}
+
+#[repr(C)]
+struct MCSemaNotes {
+    name: StringRef,
+    in_string: StringRef,
+    out_string: StringRef
+}
+extern "C" {
+    fn write_file(module: *const LLVMModule, file_name: *const i8,
+                  instr_notes: *const MCSemaNotes, instr_count: usize);
 }
 
 pub struct TranslationState<'a> {
@@ -53,22 +73,27 @@ impl <'a> TranslationState<'a> {
             rewrap(info.get_flag_names(true)));
     }
 
-    fn get_function(&'a self, inst: &Instruction) -> &'a Function {
-        let func_name = inst.opcode.name;
-        if let Some(f) = self.module.get_function(func_name) {
-            return f;
-        }
-
+    pub fn get_function(&'a self, inst: &Instruction) -> &'a Function {
         let ctx = self.module.get_context();
         let mut in_types = Vec::new();
         let mut out_types = Vec::new();
 
         // Load the known register kinds.
-        for op in inst.opcode.get_operands() {
+        let mut name_comps = Vec::new();
+        name_comps.push(inst.opcode.name);
+        let mri = self.state.get_target_triple().register_info();
+        for (op, real) in inst.opcode.get_operands().iter().zip(inst.operands.iter()) {
             let mut array = if op.write { &mut out_types } else { &mut in_types };
             match op.kind {
                 OperandType::Register(ref rc) => {
                     array.push(Type::get::<u64>(&ctx));
+                    if rc.name == "GR8" {
+                        let reg = real.get_register();
+                        let top = reg.get_top_register(mri);
+                        let (offset, _) = top.get_sub_register_slice(reg, mri)
+                            .unwrap();
+                        name_comps.push(if offset > 0 { "hi" } else { "lo" });
+                    }
                 },
                 OperandType::FixedRegister(ref reg) => {
                     if is_flags(reg) { continue; }
@@ -78,7 +103,7 @@ impl <'a> TranslationState<'a> {
                     let other = &inst.opcode.get_operands()[index as usize];
                     assert!(op.write != other.write);
                     match other.kind {
-                        OperandType::Register(ref rc) => {
+                        OperandType::Register(_) => {
                             array.push(Type::get::<u64>(&ctx));
                         },
                         OperandType::FixedRegister(ref reg) => {
@@ -105,10 +130,16 @@ impl <'a> TranslationState<'a> {
             out_types.push(Type::get::<bool>(&ctx));
         }
 
-        // Get the function.
-        let structTy = StructType::new(&ctx, &out_types, false);
-        let fnTy = FunctionType::new(structTy, &in_types);
-        let function = self.module.add_function(func_name, fnTy);
+        // Get the function, if available.
+        let func_name = name_comps.join("_");
+        if let Some(f) = self.module.get_function(&func_name) {
+            return f;
+        }
+
+        // If not, add it to the module.
+        let struct_ty = StructType::new(&ctx, &out_types, false);
+        let fn_ty = FunctionType::new(struct_ty, &in_types);
+        let function = self.module.add_function(&func_name, fn_ty);
         return function;
     }
 
@@ -149,13 +180,7 @@ impl <'a> TranslationState<'a> {
                     reg_state: &RegState<'a>) -> &'a Value {
         let top_level = reg.get_top_register(mri);
         let full_value = reg_state.0.get(top_level).unwrap();
-        let value = if let Some((offset, size)) =
-                top_level.get_sub_register_slice(reg, mri) {
-            self.builder.build_ashr(full_value, 0u64.compile(full_value.get_context()))
-        } else {
-            full_value
-        };
-        return value;
+        return full_value;
     }
 
     fn get_flag(&self, flag: &str, reg_state: &RegState<'a>) -> &'a Value {
@@ -173,11 +198,6 @@ impl <'a> TranslationState<'a> {
         reg_state.1.insert(String::from(flag), val);
         val.set_name(flag);
     }
-
-    pub fn add_base(&self) {
-        add_base_programs(&self.module, &self.builder,
-                          &self.state.get_target_triple());
-    }
 }
 
 type RegInfo<'a> = (Vec<&'a Register>, Vec<&'a Register>);
@@ -193,6 +213,10 @@ fn parse_asm_file<'a>(tt: &'a TargetTriple,
     let mut file = File::open(path).expect("Could not find file");
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Could not read file");
+    if contents.contains("callq") {
+        println!("Found call, skipping for now");
+        return Vec::new();
+    }
     return tt.parse_instructions("", "", &contents);
 }
 
@@ -215,6 +239,9 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
     let function = xlation.get_function(&base[0]);
 
     let insts = parse_asm_file(tt, &inst.get_circuit_file(state));
+    if insts.is_empty() {
+        return; // XXX
+    }
 
     // Set up a register map to keep track of the various registers.
     let top_level_regs = tt.register_info().get_top_level_registers();
@@ -228,8 +255,12 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
     let (output_registers, input_registers) =
         xlation.get_registers(representative);
     let (input_flags, output_flags) = xlation.get_flags(representative);
-    assert!(input_registers.is_empty(), "Deal with you later");
-    println!("{:?}", reg_state);
+    for (i, register) in input_registers.iter().enumerate() {
+        xlation.set_register(register, mri, &mut reg_state, &*function[i]);
+    }
+    for (i, flag) in input_flags.iter().enumerate() {
+        xlation.set_flag(flag, &mut reg_state, &*function[i + input_flags.len()]);
+    }
 
     // Build the actual code of the basic block.
     let block = function.append("entry");
@@ -275,14 +306,34 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
 
     // Optimization!
     module.optimize(3, 3);
-    state.add_base();
+    add_base_programs(module, &state.builder, &state,
+                      &state.state.get_target_triple());
     module.verify().unwrap();
     module.optimize(3, 3);
+
+    // Build the instruction notes for the output
+    let mut known_insts = Vec::new();
+    for inst in state.state.get_instructions(InstructionState::Success) {
+        let base = parse_asm_file(state.state.get_target_triple(),
+            &inst.get_inst_file(state.state));
+        let name = base[0].opcode.name;
+        if module.get_function(base[0].opcode.name).is_some() {
+            let in_str = if name == "CLC" { "" } else { "1 2" };
+            let out_str = if name == "CLC" { "CF" } else { "0 CF PF ZF SF OF" };
+            known_insts.push(MCSemaNotes {
+                name: get_string(name),
+                in_string: get_string(in_str),
+                out_string: get_string(out_str)
+            });
+        }
+    }
 
     unsafe {
         use std::ffi::CString;
 
         let filename = CString::new(file.to_str().unwrap()).unwrap();
-        write_file(state.module.as_ptr(), filename.as_ptr());
+        write_file(state.module.as_ptr(), filename.as_ptr(),
+                   known_insts.as_slice().as_ptr(), known_insts.len());
     }
+    println!("{:?}", module);
 }

@@ -63,4 +63,12 @@ impl <'a> Operand<'a> {
             }
         }
     }
+
+    pub fn get_register(&self) -> &'a Register {
+        match self {
+            &Operand::Immediate(_) => panic!("Immediate is not a register"),
+            &Operand::FPImmediate(_) => panic!("Immediate is not a register"),
+            &Operand::Register(r) => r
+        }
+    }
 }

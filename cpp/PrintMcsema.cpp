@@ -229,15 +229,20 @@ void translateFunction(Function *F, raw_ostream &out,
   MCSemaVisitor visit(out, inRegList, outRegList);
   visit.addArguments(F);
   visit.visit(F);
-  // XXX: process Functions
   out << "  return ContinueBlock;\n";
   out << "}\n";
   out.flush();
 }
+
+struct MCSemaNotes {
+    StringRef name;
+    StringRef in_string;
+    StringRef out_string;
+};
 }
 
-
-extern "C" void write_file(Module *M, const char *outFile) {
+extern "C" void write_file(Module *M, const char *outFile, MCSemaNotes *notes,
+    size_t nNotes) {
   // XXX: The llvm-alt crate doesn't run inlining passes. So do that first.
   {
     PassManagerBuilder pm;
@@ -255,21 +260,20 @@ extern "C" void write_file(Module *M, const char *outFile) {
     MPM.run(*M);
   }
 
+  ArrayRef<MCSemaNotes> instructions(notes, nNotes);
+
   std::error_code ec;
   raw_fd_ostream out(outFile, ec, sys::fs::F_None);
-  {
-    auto F = M->getFunction("CLC");
-    translateFunction(F, out, "", "CF");
-  }
-  {
-    auto F = M->getFunction("XOR64rr");
-    translateFunction(F, out, "1 2", "0 CF PF ZF SF OF");
+  for (auto inst : instructions) {
+      auto F = M->getFunction(inst.name);
+      translateFunction(F, out, inst.in_string, inst.out_string);
   }
 
   out << "\n\n";
   out << "void AUTOGEN_populateDispatchMap(DispatchMap &m) {\n";
-  for (auto inst : std::vector<std::string>({"CLC", "XOR64rr"})) {
-    out << "  m[llvm::X86::" << inst << "] = trans_" << inst << ";\n";
+  for (auto inst : instructions) {
+    auto name = inst.name;
+    out << "  m[llvm::X86::" << name << "] = trans_" << name << ";\n";
   }
   out << "}\n";
 }
