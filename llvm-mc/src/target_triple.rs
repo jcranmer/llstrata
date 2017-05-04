@@ -77,14 +77,14 @@ impl <'a> TargetTriple<'a> {
         &self.instructions
     }
 
-    /// Parse an assembly file into a list of instructions.
+    /// Parse an assembly program into a list of instructions.
     ///
     /// This is not necessarily a good representation of an assembly file, but
     /// it is sufficient for immediate needs. Actually reflecting a more
     /// general representation of a parser would involve having to reflect
     /// large portions of the LLVM MC backend for sufficient information.
     pub fn parse_instructions(&'a self, cpu: &str, features: &str,
-                              file_name: &str) -> Vec<mcinst::Instruction<'a>> {
+                              contents: &str) -> Vec<mcinst::Instruction<'a>> {
         let mut insts = Vec::new();
         unsafe {
             let sti = self.target.getSTI(cpp::llvm::StringRef::from(cpu),
@@ -94,14 +94,14 @@ impl <'a> TargetTriple<'a> {
                     inst.as_ref().unwrap(), self);
                 insts.push(concrete);
             };
-            self.parse_file(sti, file_name, &Closure(&mut closure));
+            self.parse_asm(sti, contents, &Closure(&mut closure));
         }
         return insts;
     }
 
-    fn parse_file(&self, sti: *const cpp::llvm::MCSubtargetInfo, file_name: &str, closure: &Closure) {
+    fn parse_asm(&self, sti: *const cpp::llvm::MCSubtargetInfo, asm: &str, closure: &Closure) {
         unsafe {
-            self.target.parseAsmFile(sti, cpp::llvm::StringRef::from(file_name),
+            self.target.parseAsm(sti, cpp::llvm::StringRef::from(asm),
               Some(TargetTriple::callback), transmute(closure));
         }
     }

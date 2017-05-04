@@ -29,4 +29,6 @@ public:
       llvm::StringRef features) const;
   void parseAsmFile(const llvm::MCSubtargetInfo *STI, llvm::StringRef filename,
       InstCallback callback, const RustClosure *pThis) const;
+  void parseAsm(const llvm::MCSubtargetInfo *STI, llvm::StringRef file,
+      InstCallback callback, const RustClosure *pThis) const;
 };

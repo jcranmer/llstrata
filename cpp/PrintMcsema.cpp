@@ -53,6 +53,18 @@ static const char *getPredicateName(CmpInst::Predicate p) {
   return "";
 }
 
+static const char *getCastName(Instruction::CastOps op) {
+    switch (op) {
+#define HANDLE_CAST_INST(N, OPC, CLASS) \
+    case Instruction::OPC: return #OPC;
+    #include <llvm/IR/Instruction.def>
+#undef HANDLE_CAST_INST
+    case Instruction::CastOpsEnd: break;
+    }
+    assert(false && "This cannot happen");
+    return "";
+}
+
 class MCSemaVisitor : public InstVisitor<MCSemaVisitor> {
   raw_ostream &out;
   const SmallVector<StringRef, 7> &in_regs;
@@ -71,7 +83,7 @@ public:
   raw_ostream &getValue(Value *V) {
     if (ConstantInt *C = dyn_cast<ConstantInt>(V)) {
       out << "llvm::ConstantInt::get(" <<
-        "llvm::IntegerType::get(b->getContext(), " << C->getBitWidth() << "), "
+        "llvm::IntegerType::get(block->getContext(), " << C->getBitWidth() << "), "
         << C->getZExtValue() << ", " << C->isNegative() << ")";
     } else {
       auto val = variables.find(V);
@@ -82,6 +94,16 @@ public:
       }
     }
     return out;
+  }
+
+  raw_ostream &getType(Type *T) {
+      if (IntegerType *IT = dyn_cast<IntegerType>(T)) {
+          out << "IntegerType::get(block->getContext(), "
+              << IT->getBitWidth() << ")";
+      } else {
+          assert(false && "We don't know the current type");
+      }
+      return out;
   }
 
   void visitReturnInst(ReturnInst &I) {
@@ -112,7 +134,15 @@ public:
     out << "  llvm::Value *" << var_name << " = BinaryOperator::Create("
       << "Instruction::" << O.getOpcodeName() << ", ";
     getValue(O.getOperand(0)) << ", ";
-    getValue(O.getOperand(1)) << ");\n";
+    getValue(O.getOperand(1)) << ", \"\", block);\n";
+  }
+  void visitCastInst(CastInst &I) {
+    std::string var_name = makeName();
+    variables.insert(std::make_pair(&I, var_name));
+    out << "  llvm::Value *" << var_name << " = CastInst::Create("
+        << "Instruction::" << getCastName(I.getOpcode()) << ", ";
+    getValue(I.getOperand(0)) << ", ";
+    getType(I.getType()) << ", \"\", block);\n";
   }
   void visitCmpInst(CmpInst &I) {
     std::string var_name = makeName();
@@ -121,8 +151,33 @@ public:
       << "Instruction::" << I.getOpcodeName() << ", "
       << "CmpInst::" << getPredicateName(I.getPredicate()) << ", ";
     getValue(I.getOperand(0)) << ", ";
-    getValue(I.getOperand(1)) << ");\n";
+    getValue(I.getOperand(1)) << ", \"\", block);\n";
   }
+  void visitIntrinsicInst(IntrinsicInst &I) {
+    std::string var_name = makeName();
+    variables.insert(std::make_pair(&I, var_name));
+
+    if (I.getIntrinsicID() == Intrinsic::ctpop) {
+      out << "  auto intrinsic = Intrinsic::getDeclaration("
+        << "block->getParent()->getParent(), "
+        << "llvm::Intrinsic::ctpop, "
+        << "llvm::Type::getInt8Ty(block->getContext()));\n";
+    } else {
+      assert(false && "We found an intrinsic we don't know about");
+    }
+    out << "  llvm::Value *" << var_name << " = CallInst::Create("
+      << "intrinsic" << ", ArrayRef<Value *>({";
+    bool comma = false;
+    for (auto &op : I.arg_operands()) {
+      if (comma)
+          out << ", ";
+      getValue(op);
+      comma = true;
+    }
+    out << "}), \"\", block);\n";
+  }
+
+
   void visitInstruction(Instruction &I) {
     I.dump();
     llvm_unreachable("We don't know how to handle this instruction!");

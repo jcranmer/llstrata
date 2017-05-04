@@ -6,6 +6,7 @@ extern crate serde_json;
 extern crate tempdir;
 
 mod mcsema;
+mod sema;
 mod state;
 mod stoke;
 

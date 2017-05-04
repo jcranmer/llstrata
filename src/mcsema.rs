@@ -1,8 +1,11 @@
 use llvm::*;
 use llvmmc::*;
 use llvm_sys::LLVMModule;
+use sema::*;
 use state::{InstructionInfo, State};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 extern {
@@ -14,8 +17,6 @@ pub struct TranslationState<'a> {
     builder: CSemiBox<'a, Builder>,
     state: &'a State<'a>
 }
-
-pub type TranslationCache<'a> = HashMap<InstructionInfo, Vec<Instruction<'a>>>;
 
 // The basic idea behind our translation scheme. We're going to convert each
 // operand into a function that computes live_out = opcode(def_in). For example:
@@ -97,10 +98,10 @@ impl <'a> TranslationState<'a> {
 
         // Now add in known flag effects.
         let (in_flags, out_flags) = self.get_flags(inst);
-        for flag in in_flags {
+        for _ in in_flags {
             in_types.push(Type::get::<bool>(&ctx));
         }
-        for flag in out_flags {
+        for _ in out_flags {
             out_types.push(Type::get::<bool>(&ctx));
         }
 
@@ -173,65 +174,9 @@ impl <'a> TranslationState<'a> {
         val.set_name(flag);
     }
 
-    // XXX: need a better way to do this.
-    fn add_base(&self, mri: &RegisterInfo) {
-        {
-        let func = self.module.get_function("XOR64rr").unwrap();
-        let ctx = self.module.get_context();
-        self.builder.position_at_end(func.append("entry"));
-        let builder = &self.builder;
-        let mut reg_state: RegState = Default::default();
-        let lhs = &*func[0];
-        let rhs = &*func[1];
-        let res = builder.build_or(builder.build_and(lhs, builder.build_not(rhs)),
-                                   builder.build_and(builder.build_not(lhs), rhs));
-        let cf = false.compile(ctx);
-        let pf = false.compile(ctx); // XXX
-        let zf = builder.build_cmp(res, 0u64.compile(ctx), Predicate::Equal);
-        let sf = builder.build_cmp(res, 0u64.compile(ctx), Predicate::LessThan);
-        let of = false.compile(ctx);
-        let mut ret = Value::new_undef(func.get_signature().get_return());
-        ret = builder.build_insert_value(ret, res, 0);
-        ret = builder.build_insert_value(ret, cf, 1);
-        ret = builder.build_insert_value(ret, pf, 2);
-        ret = builder.build_insert_value(ret, zf, 3);
-        ret = builder.build_insert_value(ret, sf, 4);
-        ret = builder.build_insert_value(ret, of, 5);
-        builder.build_ret(ret);
-        }
-        {
-        let func = self.module.get_function("ADC8rr").unwrap();
-        let ctx = self.module.get_context();
-        self.builder.position_at_end(func.append("entry"));
-        let builder = &self.builder;
-        let mut reg_state: RegState = Default::default();
-        let lhs = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
-        let rhs = builder.build_trunc(&*func[1], Type::get::<u8>(ctx));
-        let in_cf = builder.build_zext(&*func[2], Type::get::<u8>(ctx));
-        let full = builder.build_call(self.module.add_function("llvm.uadd.with.overflow.i8",
-            FunctionType::new(StructType::new(ctx, &[Type::get::<u8>(ctx), Type::get::<bool>(ctx)], false),
-                              &[Type::get::<u8>(ctx), Type::get::<u8>(ctx)])),
-                              &[lhs, rhs]);
-        let res = builder.build_extract_value(full, 0);
-        let cf = builder.build_extract_value(full, 1);
-        let pf = false.compile(ctx); // XXX
-        let zf = builder.build_cmp(res, 0u8.compile(ctx), Predicate::Equal);
-        let sf = builder.build_cmp(res, 0u8.compile(ctx), Predicate::LessThan);
-        let of = false.compile(ctx);
-
-        // Retain the top 56 bits, set the bottom 8 bits.
-        let full_res = builder.build_or(
-            builder.build_and(&*func[0], (!0xffu64).compile(ctx)),
-            builder.build_zext(res, Type::get::<u64>(ctx)));
-        let mut ret = Value::new_undef(func.get_signature().get_return());
-        ret = builder.build_insert_value(ret, full_res, 0);
-        ret = builder.build_insert_value(ret, cf, 1);
-        ret = builder.build_insert_value(ret, pf, 2);
-        ret = builder.build_insert_value(ret, zf, 3);
-        ret = builder.build_insert_value(ret, sf, 4);
-        ret = builder.build_insert_value(ret, of, 5);
-        builder.build_ret(ret);
-        }
+    pub fn add_base(&self) {
+        add_base_programs(&self.module, &self.builder,
+                          &self.state.get_target_triple());
     }
 }
 
@@ -243,6 +188,14 @@ fn is_flags(reg: &Register) -> bool {
     return reg.name == "EFLAGS";
 }
 
+fn parse_asm_file<'a>(tt: &'a TargetTriple,
+                      path: &Path) -> Vec<Instruction<'a>> {
+    let mut file = File::open(path).expect("Could not find file");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).expect("Could not read file");
+    return tt.parse_instructions("", "", &contents);
+}
+
 pub fn translate_instruction<'a>(inst: &InstructionInfo,
                              state: &State,
                              xlation: &TranslationState,
@@ -252,8 +205,7 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
 
     let mri = tt.register_info();
     println!("Translating {}", inst.opcode);
-    let base = tt.parse_instructions("", "",
-        inst.get_inst_file(state).to_str().unwrap());
+    let base = parse_asm_file(tt, &inst.get_inst_file(state));
     assert!(base.len() == 2, "We expect the instruction file to have little");
     assert!(base[base.len() - 1].opcode.is_return());
 
@@ -262,8 +214,7 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
     // Print out the header of the function for this instruction.
     let function = xlation.get_function(&base[0]);
 
-    let insts = tt.parse_instructions("", "",
-        inst.get_circuit_file(state).to_str().unwrap());
+    let insts = parse_asm_file(tt, &inst.get_circuit_file(state));
 
     // Set up a register map to keep track of the various registers.
     let top_level_regs = tt.register_info().get_top_level_registers();
@@ -324,7 +275,7 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
 
     // Optimization!
     module.optimize(3, 3);
-    state.add_base(state.state.get_target_triple().register_info());
+    state.add_base();
     module.verify().unwrap();
     module.optimize(3, 3);
 

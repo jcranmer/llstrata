@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 
 pub struct State<'a> {
@@ -70,8 +70,12 @@ impl <'a> State<'a> {
         if self.cache.borrow().is_empty() {
             let instrs = self.get_instructions(InstructionState::Success);
             for inst in instrs {
-                let base = self.tt.parse_instructions("", "",
-                                                 inst.get_inst_file(self).to_str().unwrap());
+                let path = inst.get_inst_file(self);
+                let mut file = File::open(&path).expect("Could not find file");
+                let mut contents = String::new();
+                file.read_to_string(&mut contents)
+                    .expect("Could not read file");
+                let base = self.tt.parse_instructions("", "", &contents);
                 if base.is_empty() {
                     println!("We need to add info for {}", inst.opcode);
                     continue;

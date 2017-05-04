@@ -117,3 +117,32 @@ void TargetTriple::parseAsmFile(const MCSubtargetInfo *STI, StringRef filename,
 
   delete STI;
 }
+
+void TargetTriple::parseAsm(const MCSubtargetInfo *STI, StringRef contents,
+    InstCallback callback, const RustClosure *pThis) const {
+
+  // Init the MC things we need.
+  std::unique_ptr<MCAsmInfo> mai(target->createMCAsmInfo(*mri, triple->str()));
+  MCObjectFileInfo MOFI;
+  MCContext ctx(mai.get(), mri, &MOFI);
+  MOFI.InitMCObjectFileInfo(*triple, Reloc::Static, CodeModel::Default, ctx);
+
+
+  // Load the contents.
+  std::unique_ptr<MemoryBuffer> buf(
+      MemoryBuffer::getMemBuffer(contents, "", false));
+  SourceMgr asmSource;
+  asmSource.AddNewSourceBuffer(std::move(buf), SMLoc());
+
+  // Run this through the output streamer.
+  AsmOutputStreamer aos(ctx, callback, pThis);
+  std::unique_ptr<MCAsmParser> parser(createMCAsmParser(asmSource,
+    ctx, aos, *mai));
+  std::unique_ptr<MCTargetAsmParser> targetParser(
+    target->createMCAsmParser(*STI, *parser, *mii,
+    MCTargetOptions{}));
+  parser->setTargetParser(*targetParser);
+  parser->Run(false);
+
+  delete STI;
+}
