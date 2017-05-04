@@ -174,6 +174,11 @@ public:
         << "block->getParent()->getParent(), "
         << "llvm::Intrinsic::uadd_with_overflow, ";
       getType(I.getArgOperand(0)->getType()) << ");\n";
+    } else if (I.getIntrinsicID() == Intrinsic::sadd_with_overflow) {
+      out << "  auto intrinsic = Intrinsic::getDeclaration("
+        << "block->getParent()->getParent(), "
+        << "llvm::Intrinsic::sadd_with_overflow, ";
+      getType(I.getArgOperand(0)->getType()) << ");\n";
     } else {
       assert(false && "We found an intrinsic we don't know about");
     }
@@ -187,6 +192,14 @@ public:
       comma = true;
     }
     out << "}), \"\", block);\n";
+  }
+  void visitSelectInst(SelectInst &I) {
+    std::string var_name = makeName();
+    variables.insert(std::make_pair(&I, var_name));
+    out << "  llvm::Value *" << var_name << " = SelectInst::Create(";
+    getValue(I.getCondition()) << ", ";
+    getValue(I.getTrueValue()) << ", ";
+    getValue(I.getFalseValue()) << ", \"\", block);\n";
   }
 
 

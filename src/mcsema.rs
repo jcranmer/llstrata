@@ -358,4 +358,5 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         write_file(state.module.as_ptr(), filename.as_ptr(),
                    known_insts.as_slice().as_ptr(), known_insts.len());
     }
+    //println!("{:?}", module);
 }

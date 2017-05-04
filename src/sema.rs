@@ -90,11 +90,54 @@ fn adcb_r8_r8(func: &Function, builder: &Builder) {
     let cf = builder.build_or(
         builder.build_extract_value(full, 1),
         builder.build_extract_value(half, 1));
-    let of = false.compile(ctx);
+    let soverflow = 
+        get_intrinsic::<fn(u8, u8) -> (u8, bool)>("llvm.sadd.with.overflow.i8");
+    let shalf = builder.build_call(soverflow, &[lhs, rhs]);
+    let sfull = builder.build_call(soverflow,
+        &[builder.build_extract_value(shalf, 0), in_cf]);
+    let of = builder.build_or(
+        builder.build_extract_value(sfull, 1),
+        builder.build_extract_value(shalf, 1));
 
     // Retain the top 56 bits, set the bottom 8 bits.
     let full_res = builder.build_or(
         builder.build_and(&*func[0], (!0xffu64).compile(ctx)),
+        builder.build_zext(res, Type::get::<u64>(ctx)));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, full_res, 0);
+    ret = builder.build_insert_value(ret, cf, 1);
+    ret = set_flags!(2, ret, builder, res, pf, zf, sf);
+    ret = builder.build_insert_value(ret, of, 5);
+    builder.build_ret(ret);
+}
+
+fn adcw_r16_r16(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let lhs = builder.build_trunc(&*func[0], Type::get::<u16>(ctx));
+    let rhs = builder.build_trunc(&*func[1], Type::get::<u16>(ctx));
+    let in_cf = builder.build_zext(&*func[2], Type::get::<u16>(ctx));
+    let uoverflow = 
+        get_intrinsic::<fn(u16, u16) -> (u16, bool)>("llvm.uadd.with.overflow.i16");
+    let half = builder.build_call(uoverflow, &[lhs, rhs]);
+    let full = builder.build_call(uoverflow,
+        &[builder.build_extract_value(half, 0), in_cf]);
+    let res = builder.build_extract_value(full, 0);
+    let cf = builder.build_or(
+        builder.build_extract_value(full, 1),
+        builder.build_extract_value(half, 1));
+    let soverflow = 
+        get_intrinsic::<fn(u16, u16) -> (u16, bool)>("llvm.sadd.with.overflow.i16");
+    let shalf = builder.build_call(soverflow, &[lhs, rhs]);
+    let sfull = builder.build_call(soverflow,
+        &[builder.build_extract_value(shalf, 0), in_cf]);
+    let of = builder.build_or(
+        builder.build_extract_value(sfull, 1),
+        builder.build_extract_value(shalf, 1));
+
+    // Retain the top 48 bits, set the bottom 16 bits.
+    let full_res = builder.build_or(
+        builder.build_and(&*func[0], (!0xffffu64).compile(ctx)),
         builder.build_zext(res, Type::get::<u64>(ctx)));
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, full_res, 0);
@@ -119,7 +162,14 @@ fn adcl_r32_r32(func: &Function, builder: &Builder) {
     let cf = builder.build_or(
         builder.build_extract_value(full, 1),
         builder.build_extract_value(half, 1));
-    let of = false.compile(ctx);
+    let soverflow = 
+        get_intrinsic::<fn(u32, u32) -> (u32, bool)>("llvm.sadd.with.overflow.i32");
+    let shalf = builder.build_call(soverflow, &[lhs, rhs]);
+    let sfull = builder.build_call(soverflow,
+        &[builder.build_extract_value(shalf, 0), in_cf]);
+    let of = builder.build_or(
+        builder.build_extract_value(sfull, 1),
+        builder.build_extract_value(shalf, 1));
 
     // For 32-bit mode, the top 32 bits are cleared.
     let full_res = builder.build_zext(res, Type::get::<u64>(ctx));
@@ -131,6 +181,59 @@ fn adcl_r32_r32(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn adcq_r64_r64(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let lhs = builder.build_trunc(&*func[0], Type::get::<u64>(ctx));
+    let rhs = builder.build_trunc(&*func[1], Type::get::<u64>(ctx));
+    let in_cf = builder.build_zext(&*func[2], Type::get::<u64>(ctx));
+    let overflow = 
+        get_intrinsic::<fn(u64, u64) -> (u64, bool)>("llvm.uadd.with.overflow.i64");
+    let half = builder.build_call(overflow, &[lhs, rhs]);
+    let full = builder.build_call(overflow,
+        &[builder.build_extract_value(half, 0), in_cf]);
+    let res = builder.build_extract_value(full, 0);
+    let cf = builder.build_or(
+        builder.build_extract_value(full, 1),
+        builder.build_extract_value(half, 1));
+    let soverflow = 
+        get_intrinsic::<fn(u64, u64) -> (u64, bool)>("llvm.sadd.with.overflow.i64");
+    let shalf = builder.build_call(soverflow, &[lhs, rhs]);
+    let sfull = builder.build_call(soverflow,
+        &[builder.build_extract_value(shalf, 0), in_cf]);
+    let of = builder.build_or(
+        builder.build_extract_value(sfull, 1),
+        builder.build_extract_value(shalf, 1));
+
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    ret = builder.build_insert_value(ret, cf, 1);
+    ret = set_flags!(2, ret, builder, res, pf, zf, sf);
+    ret = builder.build_insert_value(ret, of, 5);
+    builder.build_ret(ret);
+}
+
+fn cmoveq_r64_r64(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let cond = builder.build_cmp(&*func[2], false.compile(ctx),
+        Predicate::Equal);
+    let val = builder.build_select(cond, &*func[1], &*func[0]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, val, 0);
+    builder.build_ret(ret);
+}
+
+fn movswq_r64_r16(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let ecx = builder.build_trunc(&*func[0], Type::get::<u16>(ctx));
+    let val = builder.build_sext(ecx, Type::get::<u64>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, val, 0);
+    builder.build_ret(ret);
+}
+
 fn movslq_r64_r32(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
@@ -138,6 +241,22 @@ fn movslq_r64_r32(func: &Function, builder: &Builder) {
     let val = builder.build_sext(ecx, Type::get::<u64>(ctx));
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, val, 0);
+    builder.build_ret(ret);
+}
+
+fn orq_r64_r64(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let lhs = &*func[0];
+    let rhs = &*func[1];
+    let res = builder.build_or(lhs, rhs);
+    let cf = false.compile(ctx);
+    let of = false.compile(ctx);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    ret = builder.build_insert_value(ret, cf, 1);
+    ret = set_flags!(2, ret, builder, res, pf, zf, sf);
+    ret = builder.build_insert_value(ret, of, 5);
     builder.build_ret(ret);
 }
 
@@ -183,8 +302,18 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
                       in(cl, bl, cf), out(bl, cf, pf, zf, sf, of));
     base_instruction!(adcl_r32_r32, "adcl %ecx, %ebx",
                       in(ecx, ebx, cf), out(rbx, cf, pf, zf, sf, of));
+    base_instruction!(adcq_r64_r64, "adcq %rcx, %rbx",
+                      in(rcx, rbx, cf), out(rbx, cf, pf, zf, sf, of));
+    base_instruction!(adcw_r16_r16, "adcw %cx, %bx",
+                      in(cx, bx, cf), out(bx, cf, pf, zf, sf, of));
+    base_instruction!(cmoveq_r64_r64, "cmoveq %rcx, %rbx",
+                      in(rcx, rbx, zf), out(rbx));
     base_instruction!(movslq_r64_r32, "movslq %ecx, %rbx",
                       in(ecx), out(rbx));
+    base_instruction!(movswq_r64_r16, "movswq %cx, %rbx",
+                      in(cx), out(rbx));
+    base_instruction!(orq_r64_r64, "orq %rcx, %rbx",
+                      in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
     base_instruction!(xorq_r64_r64, "xorq %rcx, %rbx",
                       in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
     return map;

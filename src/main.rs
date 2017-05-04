@@ -146,8 +146,10 @@ fn generate(state: &state::State) {
         if base.iter().any(|i| *i == inst) {
             continue;
         }
+        // XXX: skip for now
+        if inst.opcode == "movzbq_r64_r8" { continue; }
         mcsema::translate_instruction(&inst, state, &translation_state, state.get_target_triple());
-        if inst.opcode == "rcll_r32_one" {
+        if inst.opcode == "shll_r32_one" {
             break;
         }
     }
