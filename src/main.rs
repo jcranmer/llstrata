@@ -147,7 +147,9 @@ fn generate(state: &state::State) {
             continue;
         }
         mcsema::translate_instruction(&inst, state, &translation_state, state.get_target_triple());
-        break;
+        if inst.opcode == "rcll_r32_one" {
+            break;
+        }
     }
     mcsema::write_translations(&translation_state, Path::new("/dev/stdout"));
 }

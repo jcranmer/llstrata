@@ -309,7 +309,7 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
     add_base_programs(module, &state.builder, &state,
                       &state.state.get_target_triple());
     module.verify().unwrap();
-    module.optimize(3, 3);
+    module.optimize(3, 0);
 
     // Build the instruction notes for the output.
     // Keep strings alive for the FFI call.

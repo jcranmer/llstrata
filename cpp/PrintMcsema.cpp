@@ -153,6 +153,13 @@ public:
     getValue(I.getOperand(0)) << ", ";
     getValue(I.getOperand(1)) << ", \"\", block);\n";
   }
+  void visitExtractValueInst(ExtractValueInst &I) {
+    std::string var_name = makeName();
+    variables.insert(std::make_pair(&I, var_name));
+    out << "  llvm::Value *" << var_name << " = ExtractValueInst::Create(";
+    getValue(I.getAggregateOperand()) << ", " << I.getIndices()[0]
+      << ", \"\", block);\n";
+  }
   void visitIntrinsicInst(IntrinsicInst &I) {
     std::string var_name = makeName();
     variables.insert(std::make_pair(&I, var_name));
@@ -162,6 +169,11 @@ public:
         << "block->getParent()->getParent(), "
         << "llvm::Intrinsic::ctpop, "
         << "llvm::Type::getInt8Ty(block->getContext()));\n";
+    } else if (I.getIntrinsicID() == Intrinsic::uadd_with_overflow) {
+      out << "  auto intrinsic = Intrinsic::getDeclaration("
+        << "block->getParent()->getParent(), "
+        << "llvm::Intrinsic::uadd_with_overflow, ";
+      getType(I.getArgOperand(0)->getType()) << ");\n";
     } else {
       assert(false && "We found an intrinsic we don't know about");
     }

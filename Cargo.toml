@@ -10,7 +10,7 @@ llvmmc = { version = "0.1.0", path = "llvm-mc" }
 getopts = "0.2.14"
 serde_json = "0.9.10"
 tempdir = "0.3.5"
-llvm-alt = "0.5.0"
+llvm-alt = { git = "https://github.com/jcranmer/llvm-rs" }
 llvm-sys = "0.4.0"
 
 [build-dependencies]

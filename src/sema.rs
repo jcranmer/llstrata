@@ -29,12 +29,6 @@ fn get_constant(value: &Value, c: u64) -> &Value {
     }
 }
 
-fn build_xor<'a>(builder: &'a Builder, lhs: &'a Value,
-                 rhs: &'a Value) -> &'a Value {
-    builder.build_or(builder.build_and(lhs, builder.build_not(rhs)),
-                     builder.build_and(builder.build_not(lhs), rhs))
-}
-
 static mut INTRINSIC_BASE : Option<&'static Module> = None;
 
 fn get_intrinsic<T>(name: &str) ->
@@ -54,7 +48,7 @@ fn pf<'a>(builder: &'a Builder, value: &'a Value) -> &'a Value {
     let ctx = value.get_context();
     let lsb = builder.build_trunc(value, u8::get_type(ctx));
     let ctpop = get_intrinsic::<fn(u8) -> u8>("llvm.ctpop.i8");
-    build_xor(builder, true.compile(ctx),
+    builder.build_xor(true.compile(ctx),
         builder.build_trunc(
             builder.build_call(ctpop, &[lsb]), bool::get_type(ctx)))
 }
@@ -110,13 +104,49 @@ fn adcb_r8_r8(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn adcl_r32_r32(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let lhs = builder.build_trunc(&*func[0], Type::get::<u32>(ctx));
+    let rhs = builder.build_trunc(&*func[1], Type::get::<u32>(ctx));
+    let in_cf = builder.build_zext(&*func[2], Type::get::<u32>(ctx));
+    let overflow = 
+        get_intrinsic::<fn(u32, u32) -> (u32, bool)>("llvm.uadd.with.overflow.i32");
+    let half = builder.build_call(overflow, &[lhs, rhs]);
+    let full = builder.build_call(overflow,
+        &[builder.build_extract_value(half, 0), in_cf]);
+    let res = builder.build_extract_value(full, 0);
+    let cf = builder.build_or(
+        builder.build_extract_value(full, 1),
+        builder.build_extract_value(half, 1));
+    let of = false.compile(ctx);
+
+    // For 32-bit mode, the top 32 bits are cleared.
+    let full_res = builder.build_zext(res, Type::get::<u64>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, full_res, 0);
+    ret = builder.build_insert_value(ret, cf, 1);
+    ret = set_flags!(2, ret, builder, res, pf, zf, sf);
+    ret = builder.build_insert_value(ret, of, 5);
+    builder.build_ret(ret);
+}
+
+fn movslq_r64_r32(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let ecx = builder.build_trunc(&*func[0], Type::get::<u32>(ctx));
+    let val = builder.build_sext(ecx, Type::get::<u64>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, val, 0);
+    builder.build_ret(ret);
+}
+
 fn xorq_r64_r64(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
     let lhs = &*func[0];
     let rhs = &*func[1];
-    // XXX: llvm-alt needs build_xor ops.
-    let res = build_xor(builder, lhs, rhs);
+    let res = builder.build_xor(lhs, rhs);
     let cf = false.compile(ctx);
     let of = false.compile(ctx);
     let mut ret = Value::new_undef(func.get_signature().get_return());
@@ -151,6 +181,10 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
 
     base_instruction!(adcb_r8_r8, "adcb %cl, %bl",
                       in(cl, bl, cf), out(bl, cf, pf, zf, sf, of));
+    base_instruction!(adcl_r32_r32, "adcl %ecx, %ebx",
+                      in(ecx, ebx, cf), out(rbx, cf, pf, zf, sf, of));
+    base_instruction!(movslq_r64_r32, "movslq %ecx, %rbx",
+                      in(ecx), out(rbx));
     base_instruction!(xorq_r64_r64, "xorq %rcx, %rbx",
                       in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
     return map;
