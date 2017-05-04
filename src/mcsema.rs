@@ -88,7 +88,7 @@ impl <'a> TranslationState<'a> {
                 OperandType::Register(ref rc) => {
                     array.push(Type::get::<u64>(&ctx));
                     if rc.name == "GR8" {
-                        let reg = real.get_register();
+                        let reg = real.get_register().unwrap();
                         let top = reg.get_top_register(mri);
                         let (offset, _) = top.get_sub_register_slice(reg, mri)
                             .unwrap();
@@ -311,19 +311,42 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
     module.verify().unwrap();
     module.optimize(3, 3);
 
-    // Build the instruction notes for the output
+    // Build the instruction notes for the output.
+    // Keep strings alive for the FFI call.
+    let mut keep_alive = Vec::new();
     let mut known_insts = Vec::new();
     for inst in state.state.get_instructions(InstructionState::Success) {
         let base = parse_asm_file(state.state.get_target_triple(),
             &inst.get_inst_file(state.state));
         let name = base[0].opcode.name;
         if module.get_function(base[0].opcode.name).is_some() {
-            let in_str = if name == "CLC" { "" } else { "1 2" };
-            let out_str = if name == "CLC" { "CF" } else { "0 CF PF ZF SF OF" };
+            let mut in_parts = Vec::new();
+            let mut out_parts = Vec::new();
+            let pair_iter = base[0].operands.iter().zip(
+                base[0].opcode.get_operands().iter());
+            for (i, (real, ty)) in pair_iter.enumerate() {
+                let mut parts = if ty.write {
+                    &mut out_parts
+                } else {
+                    &mut in_parts
+                };
+                if real.get_register().is_some() {
+                    parts.push(i.to_string());
+                }
+            }
+            let (mut in_flags, mut out_flags) = state.get_flags(&base[0]);
+            in_flags = in_flags.iter().map(|f| f.to_uppercase()).collect();
+            out_flags = out_flags.iter().map(|f| f.to_uppercase()).collect();
+            in_parts.append(&mut in_flags);
+            out_parts.append(&mut out_flags);
+            keep_alive.push(in_parts.join(" "));
+            let in_str = get_string(keep_alive.last().unwrap());
+            keep_alive.push(out_parts.join(" "));
+            let out_str = get_string(keep_alive.last().unwrap());
             known_insts.push(MCSemaNotes {
                 name: get_string(name),
-                in_string: get_string(in_str),
-                out_string: get_string(out_str)
+                in_string: in_str,
+                out_string: out_str
             });
         }
     }
@@ -335,5 +358,4 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         write_file(state.module.as_ptr(), filename.as_ptr(),
                    known_insts.as_slice().as_ptr(), known_insts.len());
     }
-    println!("{:?}", module);
 }

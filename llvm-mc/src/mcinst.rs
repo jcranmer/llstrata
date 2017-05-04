@@ -64,11 +64,12 @@ impl <'a> Operand<'a> {
         }
     }
 
-    pub fn get_register(&self) -> &'a Register {
+    /// Get the register associated with this operand, if it is a register.
+    pub fn get_register(&self) -> Option<&'a Register> {
         match self {
-            &Operand::Immediate(_) => panic!("Immediate is not a register"),
-            &Operand::FPImmediate(_) => panic!("Immediate is not a register"),
-            &Operand::Register(r) => r
+            &Operand::Immediate(_) => None,
+            &Operand::FPImmediate(_) => None,
+            &Operand::Register(r) => Some(r)
         }
     }
 }
