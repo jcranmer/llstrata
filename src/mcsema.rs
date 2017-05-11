@@ -7,11 +7,20 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::slice;
 
 #[repr(C)]
 struct StringRef {
     data: *const u8,
     len: usize
+}
+
+impl <'a> PartialEq<&'a str> for StringRef {
+    fn eq(&self, other: &&str) -> bool {
+        unsafe {
+            slice::from_raw_parts(self.data, self.len) == other.as_bytes()
+        }
+    }
 }
 
 fn get_string(string: &str) -> StringRef {
@@ -319,35 +328,50 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
     // Build the instruction notes for the output.
     // Keep strings alive for the FFI call.
     let mut keep_alive = Vec::new();
-    let mut known_insts = Vec::new();
+    let mut known_insts : Vec<MCSemaNotes> = Vec::new();
     for inst in state.state.get_instructions(InstructionState::Success) {
         let base = parse_asm_file(state.state.get_target_triple(),
             &inst.get_inst_file(state.state));
         let name = base[0].opcode.name;
+        // Filter out duplicate opcodes, e.g., cmovz/cmoveq or sal/shl
+        if known_insts.iter().any(|inst| inst.name == name) {
+            continue;
+        }
         if module.get_function(base[0].opcode.name).is_some() {
-            // Strata generates SAL and SHL, but these are two mnemonics for
-            // the same opcode.
-            if inst.opcode.starts_with("sal") {
-                continue;
-            }
             let mut in_parts = Vec::new();
             let mut out_parts = Vec::new();
-            // XXX: This is broken for fixed register instructions :-(
-            let pair_iter = base[0].operands.iter().zip(
-                base[0].opcode.get_operands().iter());
-            for (i, (real, ty)) in pair_iter.enumerate() {
+            let mut real_operands = base[0].operands.iter();
+            let desc_iter = base[0].opcode.get_operands().iter();
+            for (i, ty) in desc_iter.enumerate() {
                 let mut parts = if ty.write {
                     &mut out_parts
                 } else {
                     &mut in_parts
                 };
-                if real.get_register().is_some() {
-                    parts.push(i.to_string());
+                match ty.kind {
+                    OperandType::Register(_) |
+                    OperandType::TiedRegister(_) => {
+                        let real = real_operands.next().unwrap();
+                        if real.get_register().is_some() {
+                            parts.push(i.to_string());
+                        }
+                    },
+                    OperandType::FixedRegister(reg) => {
+                        if reg.name != "EFLAGS" {
+                            parts.push(format!("reg:{}", reg.name));
+                        }
+                    },
+                    _ => {
+                        panic!("Not handling");
+                    }
                 }
             }
+            fn flag_map(f: &String) -> String {
+                format!("flag:{}", f.to_uppercase())
+            }
             let (mut in_flags, mut out_flags) = state.get_flags(&base[0]);
-            in_flags = in_flags.iter().map(|f| f.to_uppercase()).collect();
-            out_flags = out_flags.iter().map(|f| f.to_uppercase()).collect();
+            in_flags = in_flags.iter().map(flag_map).collect();
+            out_flags = out_flags.iter().map(flag_map).collect();
             in_parts.append(&mut in_flags);
             out_parts.append(&mut out_flags);
             keep_alive.push(in_parts.join(" "));

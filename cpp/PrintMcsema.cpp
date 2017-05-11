@@ -216,6 +216,8 @@ public:
     StringRef reg_name = out_regs[index];
     // Is this a flag?
     if (elTy->isIntegerTy(1)) {
+      if (reg_name.startswith("flag:"))
+        reg_name = reg_name.substr(5);
       if (Constant *C = dyn_cast<Constant>(val)) {
         if (C->isZeroValue())
           out << "  F_CLEAR";
@@ -242,9 +244,10 @@ public:
       arg_index++;
       out << "  llvm::Value *" << name << " = ";
 
-      int value;
-      if (arg.getAsInteger(10, value)) {
-        out << "F_READ(block, llvm::X86::" << arg << ");\n";
+      if (arg.startswith("reg:")) {
+        out << "R_READ<64>(block, llvm::X86::" << arg.substr(4) << ");\n";
+      } else if (arg.startswith("flag:")) {
+        out << "F_READ(block, llvm::X86::" << arg.substr(5) << ");\n";
       } else {
         out << "R_READ<64>(block, inst.getOperand(" << arg
           << ").getReg());\n";
