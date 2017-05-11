@@ -82,11 +82,14 @@ impl <'a> TranslationState<'a> {
         let mut name_comps = Vec::new();
         name_comps.push(inst.opcode.name);
         let mri = self.state.get_target_triple().register_info();
-        for (op, real) in inst.opcode.get_operands().iter().zip(inst.operands.iter()) {
+        let mut real_operands = inst.operands.iter();
+        for op in inst.opcode.get_operands().iter() {
             let mut array = if op.write { &mut out_types } else { &mut in_types };
             match op.kind {
                 OperandType::Register(ref rc) => {
                     array.push(Type::get::<u64>(&ctx));
+                    let real = real_operands.next()
+                        .expect("Need matching operand");
                     if rc.name == "GR8" {
                         let reg = real.get_register().unwrap();
                         let top = reg.get_top_register(mri);
@@ -100,6 +103,8 @@ impl <'a> TranslationState<'a> {
                     array.push(Type::get::<u64>(&ctx));
                 }
                 OperandType::TiedRegister(index) => {
+                    real_operands.next()
+                        .expect("Need matching operand");
                     let other = &inst.opcode.get_operands()[index as usize];
                     assert!(op.write != other.write);
                     match other.kind {
@@ -320,8 +325,14 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
             &inst.get_inst_file(state.state));
         let name = base[0].opcode.name;
         if module.get_function(base[0].opcode.name).is_some() {
+            // Strata generates SAL and SHL, but these are two mnemonics for
+            // the same opcode.
+            if inst.opcode.starts_with("sal") {
+                continue;
+            }
             let mut in_parts = Vec::new();
             let mut out_parts = Vec::new();
+            // XXX: This is broken for fixed register instructions :-(
             let pair_iter = base[0].operands.iter().zip(
                 base[0].opcode.get_operands().iter());
             for (i, (real, ty)) in pair_iter.enumerate() {

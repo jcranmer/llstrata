@@ -224,6 +224,23 @@ fn cmoveq_r64_r64(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn movq_r64_r64(func: &Function, builder: &Builder) {
+    builder.position_at_end(func.append("entry"));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, &*func[0], 0);
+    builder.build_ret(ret);
+}
+
+fn movsbq_r64_r8(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let ecx = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
+    let val = builder.build_sext(ecx, Type::get::<u64>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, val, 0);
+    builder.build_ret(ret);
+}
+
 fn movswq_r64_r16(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
@@ -257,6 +274,154 @@ fn orq_r64_r64(func: &Function, builder: &Builder) {
     ret = builder.build_insert_value(ret, cf, 1);
     ret = set_flags!(2, ret, builder, res, pf, zf, sf);
     ret = builder.build_insert_value(ret, of, 5);
+    builder.build_ret(ret);
+}
+
+fn popcntq_r64_r64(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let ctpop = get_intrinsic::<fn(u64) -> u64>("llvm.ctpop.i64");
+    let res = builder.build_call(ctpop, &[&*func[0]]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    ret = builder.build_insert_value(ret, false.compile(ctx), 1);
+    ret = builder.build_insert_value(ret, false.compile(ctx), 2);
+    ret = set_flags!(3, ret, builder, res, zf);
+    ret = builder.build_insert_value(ret, false.compile(ctx), 4);
+    ret = builder.build_insert_value(ret, false.compile(ctx), 5);
+    builder.build_ret(ret);
+}
+
+fn salq_r64_cl(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let cl = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
+    let rbx = &*func[1];
+    //let in_cf = &*func[2];
+    let in_pf = &*func[3];
+    let in_zf = &*func[4];
+    let in_sf = &*func[5];
+    //let in_of = &*func[6];
+
+    // Shift instructions are very complicated.
+    // Step 1: Shift mask needs to be masked with 0x3f.
+    let shift_width = builder.build_and(
+        builder.build_zext(cl, Type::get::<u64>(ctx)),
+        get_constant(rbx, 0x3fu64));
+    let res = builder.build_shl(rbx, shift_width);
+
+    // We only set flags if the shift width is not 0.
+    let set_flags = builder.build_cmp(shift_width, get_constant(shift_width, 0),
+        Predicate::Equal);
+    // Carry flag is the last bit shifted out.
+    // val = bin(abcd)
+    // val << 0 = abcd, cf = <unchanged>
+    // val << 1 = bcd0, cf = a = abcd >> 3
+    // val << 2 = cd00, cf = b = abcd >> 2
+    // val << 3 = d000, cf = c = abcd >> 1
+    //let cf_if_not0 = builder.build_trunc(builder.build_lshr(
+    //    rbx, builder.build_sub(get_constant(rbx, 64), shift_width)),
+    //    Type::get::<bool>(ctx));
+    //let cf = builder.build_select(set_flags, cf_if_not0, in_cf);
+    let pf = builder.build_select(set_flags, pf(builder, res), in_pf);
+    let zf = builder.build_select(set_flags, zf(builder, res), in_zf);
+    let sf = builder.build_select(set_flags, sf(builder, res), in_sf);
+
+    // Overflow is only set if OF == 1. Actually, it's undefined if
+    // OF is not 0 or 1. Its value is whether or not the carry flag is the
+    // same as the MSB of the result.
+    //let set_of = builder.build_cmp(shift_width, get_constant(shift_width, 1),
+    //    Predicate::Equal);
+    //let of_val = builder.build_xor(cf, builder.build_trunc(
+    //    builder.build_lshr(res, get_constant(shift_width, 63)),
+    //    Type::get::<bool>(ctx)));
+    //let of = builder.build_select(set_of, of_val, in_of);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    ret = builder.build_insert_value(ret, pf, 1);
+    ret = builder.build_insert_value(ret, zf, 2);
+    ret = builder.build_insert_value(ret, sf, 3);
+    // XXX: Strata isn't generating CF or OF flags (because they may be
+    // undefined, AIUI).
+    builder.build_ret(ret);
+}
+
+fn sarq_r64_cl(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let cl = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
+    let rbx = &*func[1];
+    let in_cf = &*func[2];
+    let in_pf = &*func[3];
+    let in_zf = &*func[4];
+    let in_sf = &*func[5];
+    //let in_of = &*func[6];
+
+    // Shift instructions are very complicated.
+    // Step 1: Shift mask needs to be masked with 0x3f.
+    let shift_width = builder.build_and(
+        builder.build_zext(cl, Type::get::<u64>(ctx)),
+        get_constant(rbx, 0x3fu64));
+    let res = builder.build_ashr(rbx, shift_width);
+
+    // We only set flags if the shift width is not 0.
+    let set_flags = builder.build_cmp(shift_width, get_constant(shift_width, 0),
+        Predicate::Equal);
+    // Carry flag is the last bit shifted out.
+    // val = bin(abcd)
+    // val >> 0 = abcd, cf = <unchanged>
+    // val >> 1 = 0abc, cf = d = abcd >> 0
+    // val >> 2 = 00ab, cf = c = abcd >> 1
+    // val >> 3 = 000a, cf = b = abcd >> 2
+    let cf_if_not0 = builder.build_trunc(builder.build_lshr(
+        rbx, builder.build_sub(shift_width, get_constant(rbx, 1))),
+        Type::get::<bool>(ctx));
+    let cf = builder.build_select(set_flags, cf_if_not0, in_cf);
+    let pf = builder.build_select(set_flags, pf(builder, res), in_pf);
+    let zf = builder.build_select(set_flags, zf(builder, res), in_zf);
+    let sf = builder.build_select(set_flags, sf(builder, res), in_sf);
+
+    // Since Strata doesn't support OF for SAR, don't think about it for now.
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    ret = builder.build_insert_value(ret, cf, 1);
+    ret = builder.build_insert_value(ret, pf, 2);
+    ret = builder.build_insert_value(ret, zf, 3);
+    ret = builder.build_insert_value(ret, sf, 4);
+    builder.build_ret(ret);
+}
+
+fn shrq_r64_cl(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let cl = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
+    let rbx = &*func[1];
+    //let in_cf = &*func[2];
+    let in_pf = &*func[3];
+    let in_zf = &*func[4];
+    let in_sf = &*func[5];
+    //let in_of = &*func[6];
+
+    // Shift instructions are very complicated.
+    // Step 1: Shift mask needs to be masked with 0x3f.
+    let shift_width = builder.build_and(
+        builder.build_zext(cl, Type::get::<u64>(ctx)),
+        get_constant(rbx, 0x3fu64));
+    let res = builder.build_lshr(rbx, shift_width);
+
+    // We only set flags if the shift width is not 0.
+    let set_flags = builder.build_cmp(shift_width, get_constant(shift_width, 0),
+        Predicate::Equal);
+    let pf = builder.build_select(set_flags, pf(builder, res), in_pf);
+    let zf = builder.build_select(set_flags, zf(builder, res), in_zf);
+    let sf = builder.build_select(set_flags, sf(builder, res), in_sf);
+
+    // Since Strata doesn't support CF or OF for SHR, don't think about it yet.
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    ret = builder.build_insert_value(ret, pf, 1);
+    ret = builder.build_insert_value(ret, zf, 2);
+    ret = builder.build_insert_value(ret, sf, 3);
     builder.build_ret(ret);
 }
 
@@ -308,12 +473,30 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
                       in(cx, bx, cf), out(bx, cf, pf, zf, sf, of));
     base_instruction!(cmoveq_r64_r64, "cmoveq %rcx, %rbx",
                       in(rcx, rbx, zf), out(rbx));
+    // XXX: movq_r64_imm64
+    base_instruction!(movq_r64_r64, "movq %rcx, %rbx",
+                      in(rcx), out(rbx));
+    // XXX: movb_r8_rh
+    // XXX: movb_rh_r8
+    base_instruction!(movsbq_r64_r8, "movsbq %cl, %rbx",
+                      in(cl), out(rbx));
     base_instruction!(movslq_r64_r32, "movslq %ecx, %rbx",
                       in(ecx), out(rbx));
     base_instruction!(movswq_r64_r16, "movswq %cx, %rbx",
                       in(cx), out(rbx));
     base_instruction!(orq_r64_r64, "orq %rcx, %rbx",
                       in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
+    base_instruction!(popcntq_r64_r64, "popcntq %rcx, %rbx",
+                      in(rcx), out(rcx, cf, pf, zf, sf, of));
+    base_instruction!(salq_r64_cl, "salq %cl, %rbx",
+                      in(cl, rbx, cf, pf, zf, sf, of),
+                      out(rcx, pf, zf, sf));
+    base_instruction!(sarq_r64_cl, "sarq %cl, %rbx",
+                      in(cl, rbx, cf, pf, zf, sf, of),
+                      out(rcx, cf, pf, zf, sf));
+    base_instruction!(shrq_r64_cl, "shrq %cl, %rbx",
+                      in(cl, rbx, cf, pf, zf, sf, of),
+                      out(rcx, cf, pf, zf, sf));
     base_instruction!(xorq_r64_r64, "xorq %rcx, %rbx",
                       in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
     return map;
