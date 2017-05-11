@@ -84,7 +84,7 @@ public:
     if (ConstantInt *C = dyn_cast<ConstantInt>(V)) {
       out << "llvm::ConstantInt::get(" <<
         "llvm::IntegerType::get(block->getContext(), " << C->getBitWidth() << "), "
-        << C->getZExtValue() << ", " << C->isNegative() << ")";
+        << C->getZExtValue() << "U, " << C->isNegative() << ")";
     } else {
       auto val = variables.find(V);
       if (val == variables.end()) {
@@ -131,8 +131,13 @@ public:
   void visitBinaryOperator(BinaryOperator &O) {
     std::string var_name = makeName();
     variables.insert(std::make_pair(&O, var_name));
+    std::string opcode_name = O.getOpcodeName();
+    opcode_name[0] = std::toupper(opcode_name[0]);
+    if (StringRef(opcode_name).endswith("shr"))
+      opcode_name[1] = 'S';
+
     out << "  llvm::Value *" << var_name << " = BinaryOperator::Create("
-      << "Instruction::" << O.getOpcodeName() << ", ";
+      << "Instruction::" << opcode_name << ", ";
     getValue(O.getOperand(0)) << ", ";
     getValue(O.getOperand(1)) << ", \"\", block);\n";
   }
@@ -147,8 +152,11 @@ public:
   void visitCmpInst(CmpInst &I) {
     std::string var_name = makeName();
     variables.insert(std::make_pair(&I, var_name));
+    std::string opcode_name = I.getOpcodeName();
+    opcode_name[0] = std::toupper(opcode_name[0]);
+    opcode_name[1] = std::toupper(opcode_name[1]);
     out << "  llvm::Value *" << var_name << " = CmpInst::Create("
-      << "Instruction::" << I.getOpcodeName() << ", "
+      << "Instruction::" << opcode_name << ", "
       << "CmpInst::" << getPredicateName(I.getPredicate()) << ", ";
     getValue(I.getOperand(0)) << ", ";
     getValue(I.getOperand(1)) << ", \"\", block);\n";
@@ -164,26 +172,22 @@ public:
     std::string var_name = makeName();
     variables.insert(std::make_pair(&I, var_name));
 
+    out << "  auto in" << var_name << " = Intrinsic::getDeclaration("
+      << "block->getParent()->getParent(), ";
     if (I.getIntrinsicID() == Intrinsic::ctpop) {
-      out << "  auto intrinsic = Intrinsic::getDeclaration("
-        << "block->getParent()->getParent(), "
-        << "llvm::Intrinsic::ctpop, "
+      out << "llvm::Intrinsic::ctpop, "
         << "llvm::Type::getInt8Ty(block->getContext()));\n";
     } else if (I.getIntrinsicID() == Intrinsic::uadd_with_overflow) {
-      out << "  auto intrinsic = Intrinsic::getDeclaration("
-        << "block->getParent()->getParent(), "
-        << "llvm::Intrinsic::uadd_with_overflow, ";
+      out << "llvm::Intrinsic::uadd_with_overflow, ";
       getType(I.getArgOperand(0)->getType()) << ");\n";
     } else if (I.getIntrinsicID() == Intrinsic::sadd_with_overflow) {
-      out << "  auto intrinsic = Intrinsic::getDeclaration("
-        << "block->getParent()->getParent(), "
-        << "llvm::Intrinsic::sadd_with_overflow, ";
+      out << "llvm::Intrinsic::sadd_with_overflow, ";
       getType(I.getArgOperand(0)->getType()) << ");\n";
     } else {
       assert(false && "We found an intrinsic we don't know about");
     }
     out << "  llvm::Value *" << var_name << " = CallInst::Create("
-      << "intrinsic" << ", ArrayRef<Value *>({";
+      << "in" << var_name << ", ArrayRef<Value *>({";
     bool comma = false;
     for (auto &op : I.arg_operands()) {
       if (comma)
@@ -223,7 +227,7 @@ public:
         getValue(val) << ");\n";
       }
     } else {
-      out << "  R_WRITE<64>(block, inst.getOperand(" << reg_name << "), ";
+      out << "  R_WRITE<64>(block, inst.getOperand(" << reg_name << ").getReg(), ";
       getValue(val) << ");\n";
     }
   }
@@ -234,11 +238,17 @@ public:
     for (auto arg : in_regs) {
       Value *argument = &*arg_value++;
       std::string name = (Twine("arg") + Twine(arg_index)).str();
-      out << "  llvm::Value *" << name << " = "
-        << "R_READ<64>(block, inst.getOperand(" << arg
-        << ").getReg());\n";
       variables.insert(std::make_pair(argument, name));
       arg_index++;
+      out << "  llvm::Value *" << name << " = ";
+
+      int value;
+      if (arg.getAsInteger(10, value)) {
+        out << "F_READ(block, llvm::X86::" << arg << ");\n";
+      } else {
+        out << "R_READ<64>(block, inst.getOperand(" << arg
+          << ").getReg());\n";
+      }
     }
   }
 };
@@ -285,10 +295,22 @@ extern "C" void write_file(Module *M, const char *outFile, MCSemaNotes *notes,
     MPM.run(*M);
   }
 
-  ArrayRef<MCSemaNotes> instructions(notes, nNotes);
-
   std::error_code ec;
   raw_fd_ostream out(outFile, ec, sys::fs::F_None);
+
+  // Output the file header
+  out << "#include <llvm/IR/BasicBlock.h>\n";
+  out << "#include <llvm/IR/Instructions.h>\n";
+  out << "#include <llvm/IR/IntrinsicInst.h>\n";
+  out << "#include <llvm/IR/Intrinsics.h>\n\n";
+  out << "#include \"mcsema/Arch/Arch.h\"\n";
+  out << "#include \"mcsema/Arch/Dispatch.h\"\n";
+  out << "#include \"mcsema/Arch/Register.h\"\n";
+  out << "#include \"mcsema/BC/Util.h\"\n\n";
+  out << "using namespace llvm;\n\n";
+
+  // Now, output every instruction output
+  ArrayRef<MCSemaNotes> instructions(notes, nNotes);
   for (auto inst : instructions) {
       auto F = M->getFunction(inst.name);
       translateFunction(F, out, inst.in_string, inst.out_string);
