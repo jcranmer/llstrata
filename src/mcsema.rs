@@ -44,7 +44,7 @@ extern "C" {
 pub struct TranslationState<'a> {
     module: CSemiBox<'a, Module>,
     builder: CSemiBox<'a, Builder>,
-    state: &'a State<'a>
+    pub state: &'a State<'a>
 }
 
 // The basic idea behind our translation scheme. We're going to convert each
@@ -72,6 +72,10 @@ impl <'a> TranslationState<'a> {
     }
 
     fn get_flags(&self, inst: &Instruction) -> (Vec<String>, Vec<String>) {
+        if let Some(func) = self.get_pseudo_function(inst) {
+            return self.get_registers_for_pseudo(func).1;
+        }
+
         let info = self.state.get_info(inst)
             .expect(&format!("Need to implement {:?}", inst));
 
@@ -82,7 +86,26 @@ impl <'a> TranslationState<'a> {
             rewrap(info.get_flag_names(true)));
     }
 
+    fn get_pseudo_function(&self, inst: &Instruction) -> Option<&FunctionInfo> {
+        if inst.opcode.name.starts_with("CALL") {
+            if let Operand::Expr(OpExpr::SymbolRef(ref sym)) = inst.operands[0] {
+                let info = self.state.get_pseudo_instruction(&sym[1..]);
+                assert!(info.is_some(), "We don't have a necessary function");
+                return info;
+            }
+
+            println!("{:?}", inst);
+            panic!("We got an unexpected call instruction");
+        }
+
+        return None;
+    }
+
     pub fn get_function(&'a self, inst: &Instruction) -> &'a Function {
+        if let Some(func) = self.get_pseudo_function(inst) {
+            return self.get_function_for_pseudo(func);
+        }
+
         let ctx = self.module.get_context();
         let mut in_types = Vec::new();
         let mut out_types = Vec::new();
@@ -158,10 +181,14 @@ impl <'a> TranslationState<'a> {
     }
 
     fn get_registers(&self, inst: &'a Instruction) -> RegInfo<'a> {
+        if let Some(func) = self.get_pseudo_function(inst) {
+            return self.get_registers_for_pseudo(func).0;
+        }
+
         let mut result : RegInfo<'a> = Default::default();
         let mut op_index = 0;
         for op in inst.opcode.get_operands() {
-            let mut array = if op.write { &mut result.0 } else { &mut result.1 };
+            let mut array = if op.write { &mut result.1 } else { &mut result.0 };
 
             if op.implicit {
                 if let OperandType::FixedRegister(reg) = op.kind {
@@ -212,9 +239,64 @@ impl <'a> TranslationState<'a> {
         reg_state.1.insert(String::from(flag), val);
         val.set_name(flag);
     }
+
+    pub fn get_function_for_pseudo(&'a self, pseudo: &FunctionInfo) -> &'a Function {
+        let ctx = self.module.get_context();
+        let registers = self.get_registers_for_pseudo(pseudo);
+        let name = pseudo.name;
+        if let Some(f) = self.module.get_function(name) {
+            return f;
+        }
+
+        let mut in_types = Vec::new();
+        let mut out_types = Vec::new();
+        let (in_regs, out_regs) = registers.0;
+        for _ in in_regs {
+            in_types.push(Type::get::<u64>(&ctx));
+        }
+        for _ in out_regs {
+            out_types.push(Type::get::<u64>(&ctx));
+        }
+
+        let (in_flags, out_flags) = registers.1;
+        for _ in in_flags {
+            in_types.push(Type::get::<bool>(&ctx));
+        }
+        for _ in out_flags {
+            out_types.push(Type::get::<bool>(&ctx));
+        }
+
+        let struct_ty = StructType::new(&ctx, &out_types, false);
+        let fn_ty = FunctionType::new(struct_ty, &in_types);
+        return self.module.add_function(name, fn_ty);
+    }
+
+    fn get_registers_for_pseudo(&self, pseudo: &FunctionInfo) -> (RegInfo<'a>, FlagInfo) {
+        let mut registers : RegInfo<'a> = Default::default();
+        let mut flags : FlagInfo = Default::default();
+        let mri = self.state.get_target_triple().register_info();
+        for input in &pseudo.def_in {
+            let upper = input.to_uppercase();
+            if let Some(reg) = mri.get_register(&upper) {
+                registers.0.push(reg);
+            } else {
+                flags.0.push(input.to_string());
+            }
+        }
+        for output in &pseudo.live_out {
+            let upper = output.to_uppercase();
+            if let Some(reg) = mri.get_register(&upper) {
+                registers.1.push(reg);
+            } else {
+                flags.1.push(output.to_string());
+            }
+        }
+        return (registers, flags);
+    }
 }
 
 type RegInfo<'a> = (Vec<&'a Register>, Vec<&'a Register>);
+type FlagInfo = (Vec<String>, Vec<String>);
 type RegState<'a> = (HashMap<&'a Register, &'a Value>,
                      HashMap<String, &'a Value>);
 
@@ -227,10 +309,6 @@ fn parse_asm_file<'a>(tt: &'a TargetTriple,
     let mut file = File::open(path).expect("Could not find file");
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Could not read file");
-    if contents.contains("callq") {
-        println!("Found call, skipping for now");
-        return Vec::new();
-    }
     return tt.parse_instructions("", "", &contents);
 }
 
@@ -266,14 +344,14 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
     }
 
     // For input...
-    let (output_registers, input_registers) =
+    let (input_registers, output_registers) =
         xlation.get_registers(representative);
     let (input_flags, output_flags) = xlation.get_flags(representative);
     for (i, register) in input_registers.iter().enumerate() {
         xlation.set_register(register, mri, &mut reg_state, &*function[i]);
     }
     for (i, flag) in input_flags.iter().enumerate() {
-        xlation.set_flag(flag, &mut reg_state, &*function[i + input_flags.len()]);
+        xlation.set_flag(flag, &mut reg_state, &*function[i + input_registers.len()]);
     }
 
     // Build the actual code of the basic block.
@@ -282,21 +360,21 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
 
     for step in &insts[0..insts.len() - 1] {
         let inner = xlation.get_function(step);
-        let (defined, set) = xlation.get_registers(step);
+        let (in_regs, out_regs) = xlation.get_registers(step);
         let (in_flags, out_flags) = xlation.get_flags(step);
-        let args : Vec<&Value> = set.iter()
+        let args : Vec<&Value> = in_regs.iter()
             .map(|reg| xlation.get_register(reg, mri, &reg_state))
             .chain(in_flags.iter()
                    .map(|flag| xlation.get_flag(flag, &reg_state))
             ).collect();
         let call = builder.build_call(inner, &args);
-        for (i, reg) in defined.iter().enumerate() {
+        for (i, reg) in out_regs.iter().enumerate() {
             xlation.set_register(reg, mri, &mut reg_state,
                 builder.build_extract_value(call, i));
         }
         for (i, flag) in out_flags.iter().enumerate() {
             xlation.set_flag(flag, &mut reg_state,
-                builder.build_extract_value(call, i + defined.len()));
+                builder.build_extract_value(call, i + out_regs.len()));
         }
     }
 

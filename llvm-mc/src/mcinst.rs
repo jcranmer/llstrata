@@ -1,5 +1,6 @@
 use super::bindgen::root as cpp;
 use self::cpp::llvm as llvm;
+use std::mem;
 
 use super::{InstructionDesc, Register, RegisterInfo, TargetTriple};
 
@@ -46,7 +47,10 @@ pub enum Operand<'a> {
 
     /// A specific register, with a pointer to the architecture register
     /// involved.
-    Register(&'a Register)
+    Register(&'a Register),
+
+    /// An operand expression, which includes references to symbol names.
+    Expr(OpExpr)
 }
 
 impl <'a> Operand<'a> {
@@ -58,6 +62,8 @@ impl <'a> Operand<'a> {
                 Operand::Immediate(op.getImm())
             } else if op.isFPImm() {
                 Operand::FPImmediate(op.getFPImm())
+            } else if op.isExpr() {
+                Operand::Expr(OpExpr::make(op.getExpr()))
             } else {
                 panic!("Unknown operand type");
             }
@@ -69,7 +75,36 @@ impl <'a> Operand<'a> {
         match self {
             &Operand::Immediate(_) => None,
             &Operand::FPImmediate(_) => None,
-            &Operand::Register(r) => Some(r)
+            &Operand::Register(r) => Some(r),
+            &Operand::Expr(_) => None
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum OpExpr {
+    SymbolRef(String)
+}
+
+fn cast<T>(ptr: *const llvm::MCExpr) -> *const T {
+    return unsafe { mem::transmute(ptr) };
+}
+
+impl OpExpr {
+    unsafe fn make(expr: *const llvm::MCExpr) -> OpExpr {
+        let expr_ref = expr.as_ref().unwrap();
+        match expr_ref.getKind() {
+            llvm::MCExpr_ExprKind::SymbolRef => {
+                let sym_expr = cast::<llvm::MCSymbolRefExpr>(expr);
+                let name = sym_expr.as_ref().unwrap()
+                    .getSymbol().as_ref().unwrap()
+                    .getName();
+                return OpExpr::SymbolRef(String::from(name.as_str().unwrap()));
+            },
+            _ => {
+                expr_ref.dump();
+                panic!("Unhandled expression ref kinds");
+            },
         }
     }
 }

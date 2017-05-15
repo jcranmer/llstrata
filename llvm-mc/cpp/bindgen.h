@@ -1,7 +1,9 @@
 #include "TargetTriple.h"
 
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCSymbol.h"
 
 /// <div rustbindgen replaces="llvm::StringRef"></div>
 struct PseudoStringRef {

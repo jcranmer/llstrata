@@ -58,6 +58,7 @@ fn main() {
     }
 
     let mode = &matches.free[0];
+    let sub_opts = &matches.free[1..];
 
     // Load the triple, default to x86.
     // XXX: Should probably default to $HOST_CPU.
@@ -102,7 +103,12 @@ fn main() {
             step(&mut state);
         },
         "generate" => {
-            generate(&state);
+            if sub_opts.is_empty() {
+                println!("Needs output file as argument");
+                return;
+            }
+            let out = Path::new(&sub_opts[0]);
+            generate(&state, &out);
         },
         _ => {
             println!("Unknown command {}", mode);
@@ -139,7 +145,7 @@ fn step(state: &mut state::State) {
     stoke::search_instruction(state, &setnae);
 }
 
-fn generate(state: &state::State) {
+fn generate(state: &state::State, output: &Path) {
     let base = state.get_instructions(state::InstructionState::Base);
     let translation_state = mcsema::TranslationState::new(state);
     for inst in state.get_instructions(state::InstructionState::Success) {
@@ -148,10 +154,12 @@ fn generate(state: &state::State) {
         }
         // XXX: skip for now
         if inst.opcode == "movzbq_r64_r8" { continue; }
+        if inst.opcode == "movzbl_r32_rh" { continue; }
+        if inst.opcode == "decb_r8" { continue; }
         mcsema::translate_instruction(&inst, state, &translation_state, state.get_target_triple());
-        if inst.opcode == "shll_r32_one" {
+        if inst.opcode == "setae_r8" {
             break;
         }
     }
-    mcsema::write_translations(&translation_state, Path::new("/dev/stdout"));
+    mcsema::write_translations(&translation_state, output);
 }

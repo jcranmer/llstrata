@@ -502,6 +502,145 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
     return map;
 }
 
+pub struct FunctionInfo {
+    pub name: &'static str,
+    pub assembly: &'static str,
+    pub def_in: Vec<&'static str>,
+    pub live_out: Vec<&'static str>,
+    pub llvm_func: Box<Fn(&Function, &Builder)>
+}
+
+fn read_eflag_to_register(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let flag = &*func[0];
+    let res = builder.build_zext(flag, Type::get::<u64>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, res, 0);
+    builder.build_ret(ret);
+}
+
+fn set_szp<'a, T>(func: &'a Function, builder: &Builder) where T: Compile<'a> {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let val = builder.build_trunc(&*func[0], Type::get::<T>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, zf(builder, val), 0);
+    ret = builder.build_insert_value(ret, pf(builder, val), 1);
+    ret = builder.build_insert_value(ret, sf(builder, val), 2);
+    builder.build_ret(ret);
+}
+
+fn set_szp_u8(func: &Function, builder: &Builder) {
+    set_szp::<u8>(func, builder);
+}
+
+fn set_szp_u16(func: &Function, builder: &Builder) {
+    set_szp::<u16>(func, builder);
+}
+
+fn set_szp_u32(func: &Function, builder: &Builder) {
+    set_szp::<u32>(func, builder);
+}
+
+fn set_szp_u64(func: &Function, builder: &Builder) {
+    set_szp::<u64>(func, builder);
+}
+
+impl FunctionInfo {
+    pub fn get_functions() -> HashMap<&'static str, FunctionInfo> {
+        let mut functions = HashMap::new();
+macro_rules! make_string {
+    ($prefix: expr, vals()) => { "" };
+    ($prefix: expr, vals($($val:ident),*)) => {
+        concat!("#! ", $prefix, " ",
+                strata_str!($(stringify!($val)),*),
+                "\n");
+    }
+}
+macro_rules! function {
+    (fn $strname:expr, $name:path
+     [$($in_reg:ident),*] -> ($($out_reg:ident),*)
+     : ($($undef_reg:ident),*) {
+     doc($doc:expr),
+     $code:expr}) => {
+        functions.insert($strname, FunctionInfo {
+            name: $strname,
+            def_in: vec![$(stringify!($in_reg)),*],
+            live_out: vec![$(stringify!($out_reg)),*],
+            llvm_func: Box::new($name),
+            assembly: concat!("
+  .text
+  .globl ", $strname, "
+  .type ", $strname, ", @function\n",
+  make_string!("maybe-read", vals($($in_reg),*)),
+  make_string!("maybe-write", vals($($out_reg),*)),
+  make_string!("must-undef", vals($($undef_reg),*)),
+".", $strname, ":
+  # ----------------------------------------------------------------------------
+  # ", $doc, "
+  # ----------------------------------------------------------------------------
+  #", $code, "
+  retq
+
+.size ", $strname, ", .-", $strname, "
+  retq\n")
+        });
+    }
+}
+macro_rules! read_eflag {
+    ($flag:ident, $reg:ident, $reg8:ident, $setcc:ident) => {
+        function!(fn concat!("read_", stringify!($flag), "_into_",
+                    stringify!($reg)),
+                    read_eflag_to_register[$flag] -> ($reg) : () {
+            doc(concat!("read the ", stringify!($flag), " flag into ",
+                stringify!($reg))), concat!("
+  movq $0x0, %", stringify!($reg), "
+  ", stringify!($setcc), " %", stringify!($reg8))
+        });
+    }
+}
+macro_rules! set_szp {
+    ($reg:ident, $postfix:expr, $func:ident) => {
+        function!(fn concat!("set_szp_for_", stringify!($reg)),
+                    $func[$reg] -> (zf, pf, sf) : (r14, r15) {
+            doc("ser the zf, sf, pf according to the result in %r8"),
+            concat!("
+  pushfq
+  popq %r15
+  # clear zf, sf and pf
+  andq $0xffffff3b, %r15
+  # set zf if necessary
+  test", $postfix, " %", stringify!($reg), " %", stringify!($reg), "
+  jne .lbl0
+  orq $0x40, %r15
+.lbl0:
+  # set sf if necessary
+  test", $postfix, " %", stringify!($reg), " %", stringify!($reg), "
+  jns .lbl1
+  movq $0x80, %r14 # avoid sign extend when doing the or
+  orq %r14, %r15
+.lbl1:
+  # set pf if necessary
+  test", $postfix, " %", stringify!($reg), " %", stringify!($reg), "
+  jnp .lbl2
+  orq $0x4, %r15
+.lbl2:
+  pushq %r15
+  popfq")
+        });
+    }
+}
+        read_eflag!(cf, rbx, bl, setnae);
+        read_eflag!(zf, rbx, bl, setz);
+        set_szp!(bl, "b", set_szp_u8);
+        set_szp!(bx, "w", set_szp_u16);
+        set_szp!(ebx, "l", set_szp_u32);
+        set_szp!(rbx, "q", set_szp_u64);
+        return functions;
+    }
+}
+
 
 pub fn add_base_programs(module: &Module, builder: &Builder,
                          state: &TranslationState, tt: &TargetTriple) {
@@ -515,6 +654,12 @@ pub fn add_base_programs(module: &Module, builder: &Builder,
         let func = state.get_function(&inst[0]);
         (base_info.build_llvm)(func, builder);
     }
+    for pseudo_inst in state.state.get_pseudo_instructions() {
+        // XXX: check assembly correctness
+        let func = state.get_function_for_pseudo(pseudo_inst);
+        (pseudo_inst.llvm_func)(func, builder);
+    }
+    module.verify().unwrap();
     unsafe {
         INTRINSIC_BASE = None;
     }

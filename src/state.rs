@@ -2,6 +2,7 @@ use llvm::{CBox, Context};
 use llvmmc::{Instruction, TargetTriple};
 use serde_json;
 use serde_json::Value;
+use sema::FunctionInfo;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
@@ -12,7 +13,8 @@ pub struct State<'a> {
     llvm_ctx: CBox<Context>,
     path: PathBuf,
     tt: &'a TargetTriple<'a>,
-    cache: RefCell<HashMap<String, InstructionInfo>>
+    cache: RefCell<HashMap<String, InstructionInfo>>,
+    pseudo_functions: HashMap<&'static str, FunctionInfo>
 }
 
 impl <'a> State<'a> {
@@ -21,7 +23,8 @@ impl <'a> State<'a> {
             llvm_ctx: Context::new(),
             path: path,
             tt: tt,
-            cache: Default::default()
+            cache: Default::default(),
+            pseudo_functions: FunctionInfo::get_functions()
         }
     }
 
@@ -90,7 +93,16 @@ impl <'a> State<'a> {
 
         return self.cache.borrow().get(mcinst.opcode.name)
             .map(|ii| ii.clone());
-    } 
+    }
+
+    pub fn get_pseudo_instruction(&self, name: &str) -> Option<&FunctionInfo> {
+        return self.pseudo_functions.get(name);
+    }
+
+    pub fn get_pseudo_instructions<'b>(&'b self)
+        -> Box<Iterator<Item=&FunctionInfo> + 'b> {
+        Box::new(self.pseudo_functions.values())
+    }
 }
 
 pub enum InstructionState {

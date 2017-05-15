@@ -103,6 +103,8 @@ fn main() {
     .whitelisted_type("llvm::MCOI::.*")
     .whitelisted_type("llvm::MC(Instr|Register)Info")
     .whitelisted_type("llvm::MCInst")
+    .whitelisted_type("llvm::MC.*Expr")
+    .whitelisted_type("llvm::MCSymbol")
     .opaque_type("std::string")
     .opaque_type("llvm::DenseMap")
     .opaque_type("llvm::DenseMapPair")
@@ -113,4 +115,5 @@ fn main() {
     .generate().expect("Unable to generate bindings");
   bindings.write_to_file(Path::new(&out_dir).join("bindings.rs"))
     .expect("Couldn't write bindings");
+  println!("cargo:rerun-if-changed={}", "cpp/bindgen.h");
 }
