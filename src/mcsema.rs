@@ -90,6 +90,9 @@ impl <'a> TranslationState<'a> {
         if inst.opcode.name.starts_with("CALL") {
             if let Operand::Expr(OpExpr::SymbolRef(ref sym)) = inst.operands[0] {
                 let info = self.state.get_pseudo_instruction(&sym[1..]);
+                if info.is_none() {
+                    println!("Unknown func: {}", sym);
+                }
                 assert!(info.is_some(), "We don't have a necessary function");
                 return info;
             }
@@ -153,6 +156,7 @@ impl <'a> TranslationState<'a> {
                     }
                 }
                 _ => {
+                    println!("{:?}", op.kind);
                     panic!("Shouldn't reach here");
                 }
             }

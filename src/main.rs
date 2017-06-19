@@ -12,8 +12,10 @@ mod stoke;
 
 use getopts::Options;
 use llvmmc::TargetTriple;
+use std::collections::HashSet;
 use std::env;
-use std::fs::metadata;
+use std::fs::{File, metadata};
+use std::io::{self, Read};
 use std::path::Path;
 use std::process;
 
@@ -110,6 +112,9 @@ fn main() {
             let out = Path::new(&sub_opts[0]);
             generate(&state, &out);
         },
+        "check-base" => {
+            check_base(&mut state).unwrap();
+        },
         _ => {
             println!("Unknown command {}", mode);
             print_usage(&program, opts);
@@ -153,13 +158,56 @@ fn generate(state: &state::State, output: &Path) {
             continue;
         }
         // XXX: skip for now
+        if inst.opcode.contains("xmm") || inst.opcode.contains("ymm") { continue; }
         if inst.opcode == "movzbq_r64_r8" { continue; }
         if inst.opcode == "movzbl_r32_rh" { continue; }
+        if inst.opcode == "movzwl_r32_r16" { continue; }
         if inst.opcode == "decb_r8" { continue; }
+        if inst.opcode == "seto_r8" { continue; }
+        if inst.opcode == "cbtw" { continue; }
         mcsema::translate_instruction(&inst, state, &translation_state, state.get_target_triple());
-        if inst.opcode == "setae_r8" {
+        if inst.opcode == "movsbw_r16_rh" {
             break;
         }
     }
     mcsema::write_translations(&translation_state, output);
+}
+
+fn check_base(state: &mut state::State) -> io::Result<()> {
+    let funcs = sema::FunctionInfo::get_functions();
+    let mut unseen : HashSet<&'static str> = funcs.keys().map(|k| *k).collect();
+    let function_dir = state.get_workdir().join("functions");
+    for file in function_dir.read_dir()? {
+        let entry = file?;
+        let path = entry.path();
+        let name = path.file_stem().expect("Should be a .s")
+            .to_str().expect("Should be ASCII");
+        if let Some(info) = funcs.get(name) {
+            unseen.remove(name);
+            let mut file = File::open(&path)?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+
+            // Fix up label references to be unique.
+            let mut mangle_assembly = String::from(info.assembly);
+            if let Some(lbl_index) = contents.find(".lbl") {
+                let more = contents.split_at(lbl_index).1;
+                let end_index = more.find("\n").unwrap();
+                mangle_assembly = mangle_assembly
+                    .replace(".lbl", more.split_at(end_index - 1).0);
+            }
+
+            if contents.trim() != mangle_assembly.trim() && !name.starts_with("move_") {
+                println!("Assembly function {} differs from STRATA:", name);
+                println!("LLStrata:\n{}", mangle_assembly);
+                println!("STRATA:\n{}", contents);
+            }
+        } else {
+            println!("Unknown assembly function {}", name);
+        }
+    }
+    for func in unseen {
+        println!("Spurious function {}", func);
+    }
+    return Ok(());
 }
