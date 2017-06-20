@@ -197,7 +197,7 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
                     .replace(".lbl", more.split_at(end_index - 1).0);
             }
 
-            if contents.trim() != mangle_assembly.trim() && !name.starts_with("move_") {
+            if contents.trim() != mangle_assembly.trim() {
                 println!("Assembly function {} differs from STRATA:", name);
                 println!("LLStrata:\n{}", mangle_assembly);
                 println!("STRATA:\n{}", contents);

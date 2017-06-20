@@ -591,7 +591,19 @@ where S: for <'a> Compile<'a> {
     builder.build_ret(ret);
 }
 
-fn move_byte_small_large(func: &Function, builder: &Builder, byte: u64) {
+fn write_reg_byte(func: &Function, builder: &Builder, byte: u64) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let val = &*func[0];
+    let result = builder.build_or(
+        builder.build_shl(val, (byte * 8).compile(ctx)),
+        &*func[1]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, result, 0);
+    builder.build_ret(ret);
+}
+
+fn read_reg_byte(func: &Function, builder: &Builder, byte: u64) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
     let val = &*func[0];
@@ -635,6 +647,15 @@ macro_rules! make_string {
 }
 macro_rules! function {
     (fn $strname:expr, $name:path
+     [$($in_reg:ident),*] -> ($($out_reg:ident),*)
+     : ($($undef_reg:ident),*) {
+     doc($doc:expr),
+     $code:expr}) => {
+        function!(fn $strname; ($name)
+                  [$($in_reg),*] -> ($($out_reg),*) : ($($undef_reg),*)
+                  { doc($doc), $code });
+    };
+    (fn $strname:expr; ($name:expr)
      [$($in_reg:ident),*] -> ($($out_reg:ident),*)
      : ($($undef_reg:ident),*) {
      doc($doc:expr),
@@ -808,6 +829,59 @@ macro_rules! move_small_large {
         });
     }
 }
+macro_rules! move_pair {
+    ([$($rs1:ident, $rs2:ident),*], $rl:tt, $size:ident, $lsize:ident,
+      $ss:expr, $ls:expr) => {
+        $(move_pair!($rs1, $rs2, $rl, $size, $lsize, $ss, $ls);)*
+    };
+    ($rs1:ident, $rs2:ident, [$($rl:ident),*], $size:ident, $lsize:ident,
+      $ss:expr, $ls:expr) => {
+        $(move_small_large!($rs1, $rs2, $rl, $size, $lsize, $ss, $ls);)*
+    }
+}
+macro_rules! move_bytes {
+    ($reg:ident <- $byte_reg:ident, $index:expr, $index8:expr) => {{
+        fn close_function<'a>(func: &'a Function, builder: &Builder) {
+            write_reg_byte(func, builder, $index);
+        }
+        function!(fn concat!("move_", stringify!($byte_reg), "_to_byte_",
+                             stringify!($index), "_of_", stringify!($reg)),
+                    close_function[$byte_reg, $reg] -> ($reg) : (r14, r15) {
+            doc(concat!("move ", stringify!($byte_reg), " to the byte ",
+                stringify!($index), " of ", stringify!($reg))), concat!("
+  pushfq
+  xorq %r15, %r15
+  movb %", stringify!($byte_reg), ", %r15b
+  shlq $", $index8, ", %r15
+  movq $0xff, %r14
+  shlq $", $index8, ", %r14
+  notq %r14
+  andq %r14, %", stringify!($reg), "
+  orq %r15, %", stringify!($reg), "
+  popfq")
+        });
+    }};
+    ($reg:ident -> $byte_reg:ident, $index:expr, $index8:expr) => {{
+        fn close_function<'a>(func: &'a Function, builder: &Builder) {
+            read_reg_byte(func, builder, $index);
+        }
+        function!(fn concat!("move_byte_", stringify!($index), "_of_",
+                             stringify!($reg), "_to_", stringify!($byte_reg)),
+                    close_function[$reg] -> ($byte_reg) : (r15) {
+            doc(concat!("move the byte ", stringify!($index), " of ",
+                stringify!($reg), " to ", stringify!($byte_reg))), concat!("
+  pushfq
+  movq %", stringify!($reg), ", %r15
+  shrq $", $index8, ", %r15
+  movb %r15b, %", stringify!($byte_reg), "
+  popfq")
+        });
+    }};
+    (gp $reg:ident, [$($index:tt=$x8:expr),*]) => {
+        $(move_bytes!(rbx <- $reg, $index, $x8);)*
+        $(move_bytes!(rbx -> $reg, $index, $x8);)*
+    }
+}
         read_eflags!(cf, [rbx, rcx], setnae);
         read_eflags!(of, [rbx, rcx], seto);
         read_eflags!(pf, [rbx, rcx], setp);
@@ -823,13 +897,14 @@ macro_rules! move_small_large {
         set_szp!(bx, "w", u16);
         set_szp!(ebx, "l", u32);
         set_szp!(rbx, "q", u64);
-        move_small_large!(r10d, r11d, rbx, u32, u64, "32", "64");
-        move_small_large!(r8w, r9w, ebx, u16, u32, "16", "32");
-        move_small_large!(r8w, r9w, ecx, u16, u32, "16", "32");
-        move_small_large!(r8b, r9b, bx, u8, u16, "08", "16");
-        move_small_large!(r10b, r11b, bx, u8, u16, "08", "16");
-        move_small_large!(r8b, r9b, cx,  u8, u16, "08", "16");
-        move_small_large!(r10b, r11b, cx, u8, u16, "08", "16");
+        move_pair!([r8b, r9b, r10b, r11b, r12b, r13b], [bx, cx, dx],
+                   u8, u16, "08", "16");
+        move_pair!([r8w, r9w, r10w, r11w, r12w, r13w], [ebx, ecx, edx],
+                   u16, u32, "16", "32");
+        move_pair!([r8d, r9d, r10d, r11d, r12d, r13d], [rbx, rcx, rdx],
+                   u32, u64, "32", "64");
+        move_bytes!(gp r8b, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
+        move_bytes!(gp r9b, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
         return functions;
     }
 }
