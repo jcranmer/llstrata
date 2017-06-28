@@ -5,16 +5,19 @@ mod arch;
 use std::env;
 use std::fs::File;
 use std::io;
+use std::path::Path;
 
 fn main() {
-    build_asm().unwrap();
+    let path = Path::new(&env::var("OUT_DIR").unwrap()).join("glue.s");
+    build_asm(&path).unwrap();
 
     gcc::Config::new()
-        .file("glue.s")
+        .file(&path)
         .compile("libasm-glue.a");
+    println!("cargo:rustc-cfg=feature=\"not-build\"");
 }
 
-fn build_asm() -> io::Result<()> {
+fn build_asm(path: &Path) -> io::Result<()> {
     let target = env::var("TARGET").unwrap();
     let arch = target.split("-").next().unwrap();
     let asm_fun = match arch {
@@ -22,7 +25,7 @@ fn build_asm() -> io::Result<()> {
         target => panic!("Unsupported target {}", target)
     };
 
-    let mut asm_file = File::create("glue.s")?;
+    let mut asm_file = File::create(path)?;
     asm_fun(&mut asm_file)?;
 
     return Ok(());

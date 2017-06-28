@@ -1,6 +1,12 @@
 use std::fmt;
+#[cfg(not(feature="not-build"))]
 use std::io;
 use std::mem;
+#[cfg(feature="not-build")]
+use std::ptr;
+
+#[cfg(feature="not-build")]
+use libc;
 
 macro_rules! register_list {
     ($reg:ident gp) => {
@@ -143,6 +149,7 @@ impl fmt::Display for RegState {
     }
 }
 
+#[cfg(not(feature="not-build"))]
 pub fn write_asm(out: &mut io::Write) -> io::Result<()> {
     let gp_size = 8 * 16;
     let sse_size = 16 * 32;
@@ -249,4 +256,47 @@ pub fn write_asm(out: &mut io::Write) -> io::Result<()> {
     writeln!(out, ".cfi_endproc")?;
     writeln!(out, ".size call_asm_func, .-call_asm_func")?;
     return Ok(())
+}
+
+#[cfg(all(feature="not-build",target_arch="x86_64"))]
+pub fn init_exceptions() {
+    extern "C" {
+        fn asm_signal_return();
+        static mut asm_register_struct : RegState;
+    }
+
+    fn signal_handler(_: libc::c_int, _: *const libc::siginfo_t,
+                      context: *mut libc::ucontext_t) {
+        unsafe {
+            let mut regs = &mut context.as_mut().unwrap().uc_mcontext.gregs;
+            // Store the trap value in the register struct. (This is REG_TRAPNO
+            // in the thread context--it's so nice for Linux to actually pass
+            // this along for us).
+            asm_register_struct.trap = regs[20] as u64 | 0x100;
+
+            // Set RIP to the function just after the call. We might want to do
+            // a call to unwind to properly do this, but there's no guarantee
+            // that our functions have unwind tables set up properly in the
+            // first place.
+            regs[16] = asm_signal_return as usize as i64;
+            libc::setcontext(context);
+        }
+    }
+
+    fn empty_sigset() -> libc::sigset_t {
+        let mut sigset: libc::sigset_t = unsafe { mem::uninitialized() };
+        unsafe { libc::sigemptyset(&mut sigset); }
+        return sigset;
+    }
+    unsafe {
+        let mut handler : libc::sigaction = mem::zeroed();
+        handler.sa_sigaction = signal_handler as usize;
+        handler.sa_mask = empty_sigset();
+        handler.sa_flags = libc::SA_SIGINFO;
+        libc::sigaction(libc::SIGSEGV, &handler, ptr::null_mut());
+        libc::sigaction(libc::SIGFPE, &handler, ptr::null_mut());
+        libc::sigaction(libc::SIGILL, &handler, ptr::null_mut());
+        libc::sigaction(libc::SIGBUS, &handler, ptr::null_mut());
+        libc::sigaction(libc::SIGTRAP, &handler, ptr::null_mut());
+    }
 }
