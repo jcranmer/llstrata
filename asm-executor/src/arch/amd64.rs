@@ -8,6 +8,8 @@ use std::ptr;
 #[cfg(feature="not-build")]
 use libc;
 
+use arch::{as_mut_bytes, print_bytes};
+
 macro_rules! register_list {
     ($reg:ident gp) => {
         $reg!(gp rax: u64, 0);
@@ -82,6 +84,47 @@ pub struct RegState {
     pub trap: u64
 }
 
+pub const REGISTER_BANKS : u32 = 2;
+
+impl RegState {
+    pub fn get_stack_register(&mut self) -> &mut u64 {
+        macro_rules! get_stack {
+            (gp rsp: $t:ty, $i:expr) => { return &mut self.gp_regs[$i]; };
+            (gp $name:ident: $t:ty, $i: expr) => { }
+        };
+        register_list!(get_stack gp);
+    }
+
+    pub fn get_bank_size(bank_num: u32) -> usize {
+        match bank_num {
+            0 =>  8, // GP registers
+            1 => 32, // SSE registers
+            _ => panic!("Invalid bank count")
+        }
+    }
+
+    pub fn get_register(&mut self, name: &str) -> Option<&mut [u8]> {
+        fn map<T>(val: &mut T) -> Option<&mut [u8]> {
+            return Some(as_mut_bytes(val));
+        }
+        macro_rules! get_reg {
+            (gp $name:ident: $t:ty, $i: expr) => {
+                if name == stringify!($name) {
+                    return map(&mut self.gp_regs[$i]);
+                }
+            };
+            (sse $name:ident, $i: expr) => {
+                if name == stringify!($name) {
+                    return map(&mut self.sse_regs[$i]);
+                }
+            }
+        }
+        register_list!(get_reg gp);
+        register_list!(get_reg sse);
+        return None;
+    }
+}
+
 fn map_trap(code: u64) -> &'static str {
     match code {
         0 => "normal exit",
@@ -109,15 +152,6 @@ fn map_trap(code: u64) -> &'static str {
         0x100...0x11f => "unknown x86 exception",
         _ => "unknown code"
     }
-}
-
-fn print_bytes<T>(f: &mut fmt::Formatter, t: &T) -> fmt::Result {
-    let size = mem::size_of::<T>() as isize;
-    let bytes = t as *const T as *const u8;
-    for i in (0..size).rev() {
-        write!(f, " {:02x}", unsafe { *bytes.offset(i) })?;
-    }
-    return Ok(());
 }
 
 impl fmt::Display for RegState {
