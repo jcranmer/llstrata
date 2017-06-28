@@ -1,0 +1,11 @@
+[package]
+name = "asm-executor"
+version = "0.1.0"
+authors = ["Joshua Cranmer <Pidgeot18@gmail.com>"]
+build = "src/build.rs"
+
+[dependencies]
+libc = "~0.2.0"
+
+[build-dependencies]
+gcc = "~0.3.0"

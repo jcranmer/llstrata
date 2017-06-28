@@ -7,6 +7,7 @@ build = "build.rs"
 
 [dependencies]
 llvmmc = { version = "0.1.0", path = "llvm-mc" }
+asm-executor = { version = "0.1.0", path = "asm-executor" }
 getopts = "0.2.14"
 serde_json = "0.9.10"
 tempdir = "0.3.5"
