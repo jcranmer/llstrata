@@ -9,14 +9,14 @@ use std::str::FromStr;
 mod errors {
     error_chain!{
         foreign_links {
+            Null(::std::ffi::NulError);
             Fmt(::std::num::ParseIntError);
             Io(::std::io::Error);
         }
     }
 }
 
-pub use self::errors::{Error, Result};
-use self::errors::ResultExt;
+pub use self::errors::{Error, Result, ResultExt};
 
 #[repr(C)]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -263,6 +263,34 @@ impl State {
             other_banks: Vec::new()
         });
     }
+
+    pub fn parse_testcases(file: &mut io::BufRead) -> Result<Vec<State>> {
+        fn next_line(file: &mut io::BufRead) -> Result<Option<String>> {
+            let mut line = String::new();
+            line.clear();
+            if file.read_line(&mut line)? > 0 {
+                line.pop(); // Pop the newline.
+                return Ok(Some(line));
+            } else {
+                return Ok(None);
+            }
+        }
+        let mut testcases = Vec::new();
+        while let Some(line) = next_line(file)? {
+            // Skip any empty lines we find.
+            if line.is_empty() { continue; }
+            let number = TESTCASE_RE.captures(&line)
+                .ok_or("Excepted testcase line")?
+                .get(1).map(|s| usize::from_str(s.as_str())).unwrap().unwrap();
+            if number != testcases.len() {
+                bail!(format!("Expected testcase {}", testcases.len()));
+            }
+            next_line(file)?; // Skip empty line.
+            testcases.push(Self::parse_text(file)
+                .chain_err(|| format!("Parsing testcase {}", number))?);
+        }
+        return Ok(testcases);
+    }
 }
 
 impl fmt::Display for State {
@@ -286,6 +314,8 @@ macro_rules! addr {
     () => { "([0-9a-f]{8} [0-9a-f]{8})" }
 }
 lazy_static! {
+    static ref TESTCASE_RE: Regex =
+        Regex::new(r"^Testcase (\d+):$").unwrap();
     static ref SIGNAL_RE: Regex =
         Regex::new(r"^SIGNAL (\d+) \[([^\]]+)\]$").unwrap();
     static ref REG_RE: Regex =
