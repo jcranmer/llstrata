@@ -5,7 +5,10 @@ authors = ["Joshua Cranmer <Pidgeot18@gmail.com>"]
 build = "src/build.rs"
 
 [dependencies]
+error-chain = "~0.10.0"
+lazy_static = "~0.2.0"
 libc = "~0.2.0"
+regex = "~0.2.0"
 
 [build-dependencies]
 gcc = "~0.3.0"
