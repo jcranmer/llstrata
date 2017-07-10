@@ -3,7 +3,6 @@ use ::arch;
 use regex::Regex;
 use std::fmt;
 use std::io;
-use std::mem;
 use std::str::FromStr;
 
 mod errors {
@@ -81,8 +80,8 @@ impl RegState {
         if !next_line()?.trim().is_empty() { return Err("Missing line break".into()); }
 
         // Parse register banks.
-        for bank in 0..arch::host::REGISTER_BANKS {
-            while true {
+        for _ in 0..arch::host::REGISTER_BANKS {
+            loop {
                 let line = next_line()?;
                 let line = line.trim();
                 if line.is_empty() { break; }
@@ -94,7 +93,7 @@ impl RegState {
                         .map(|s| u8::from_str_radix(s.as_str(), 16).unwrap())
                         .collect();
                     bytes.reverse();
-                    state.set_register_bytes(reg, &bytes);
+                    state.set_register_bytes(reg, &bytes)?;
                 }
             }
         }
@@ -141,7 +140,7 @@ impl Memory {
 
         // Find the range, and initialize the backing memory.
         let line = next_line()?;
-        let mut captures = RANGE_RE.captures(line.trim())
+        let captures = RANGE_RE.captures(line.trim())
             .ok_or("Didn't find range")?;
         let start = parse_addr(captures.get(2).unwrap().as_str())?;
         let end = parse_addr(captures.get(1).unwrap().as_str())?;
