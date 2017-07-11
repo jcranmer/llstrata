@@ -1,8 +1,11 @@
 use ::arch;
 
 use regex::Regex;
+use std::sync::Mutex;
 use std::fmt;
 use std::io;
+use std::iter;
+use std::ops::Range;
 use std::str::FromStr;
 
 mod errors {
@@ -19,7 +22,7 @@ mod errors {
 pub use self::errors::{Error, Result, ResultExt};
 
 #[repr(C)]
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, Clone)]
 pub struct RegState {
     _state: arch::host::RegState
 }
@@ -28,6 +31,42 @@ impl fmt::Display for RegState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self._state, f)
     }
+}
+
+lazy_static! {
+    static ref REGISTER_CHECK: Mutex<Vec<(String, Range<usize>)>> = {
+        Mutex::new(
+        (0..arch::host::REGISTER_BANKS)
+            .map(|bank| (bank, arch::host::RegState::get_bank_size(bank)))
+            .flat_map(|(bank, bank_size)| {
+                arch::host::RegState::get_bank_registers(bank).iter()
+                    .zip(iter::repeat(bank_size))
+                    .map(|(reg, bank_size)| (String::from(*reg), 0..bank_size))
+            })
+            .collect()
+        )
+    };
+}
+
+pub fn only_compare_registers(reg_list: &str) {
+    let regs : Vec<_> = reg_list.split(" ")
+        .map(|reg| {
+            if let Some(idx) = reg.find(":") {
+                let (reg, idx) = reg.split_at(idx);
+                (reg, usize::from_str(&idx[1..]).expect("Can't parse register"))
+            } else {
+                let size = REGISTER_CHECK.lock().unwrap().iter()
+                    .find(|&&(ref r, ref size)| r == reg)
+                    .expect("Unknown register")
+                    .1.end;
+                (reg, size)
+            }
+        })
+        .map(|(reg, size)| {
+            (String::from(reg), 0..size)
+        })
+        .collect();
+    *REGISTER_CHECK.lock().unwrap() = regs;
 }
 
 impl RegState {
@@ -73,6 +112,25 @@ impl RegState {
             .map(|s| &*s)
     }
 
+    pub fn set_flag(&mut self, flag: &str, val: bool) -> Result<()> {
+        self._state.get_flag(flag)
+            .ok_or(format!("{} is not a flag", flag).into())
+            .and_then(|(flags, index)| {
+                let mask = 1 << index;
+                *flags = if val { *flags | mask } else { *flags & !mask };
+                return Ok(());
+            })
+    }
+
+    pub fn get_flag(&mut self, flag: &str) -> Result<bool> {
+        self.mut_state().get_flag(flag)
+            .ok_or(format!("{} is not a flag", flag).into())
+            .and_then(|(flags, index)| {
+                let mask = 1 << index;
+                return Ok(*flags & mask == mask);
+            })
+    }
+
     pub fn parse_text(file: &mut io::BufRead) -> Result<RegState> {
         let mut state = RegState { _state: Default::default() };
         let mut line = String::new();
@@ -116,11 +174,62 @@ impl RegState {
             }
         }
 
-        // XXX: parse flags lines
-        // For now, we'll just skip these.
-        while !next_line()?.trim().is_empty() { }
+        // Parse flag banks (only one for the moment, hardcoded)
+        for _ in 0..1 {
+            loop {
+                let line = next_line()?;
+                let line = line.trim();
+                if line.is_empty() { break; }
+
+                if let Some(captures) = FLAG_RE.captures(line) {
+                    let flag = captures.get(1).unwrap().as_str();
+                    let value_str = captures.get(2).unwrap().as_str();
+                    let value = value_str == "1";
+                    if flag == "0" || flag == "1" {
+                        if value_str != flag {
+                            return Err("Expected hardcoded flag value".into());
+                        }
+                    } else {
+                        state.set_flag(flag, value)?;
+                    }
+                } else {
+                    return Err("Expected flag line".into());
+                }
+            }
+        }
 
         return Ok(state);
+    }
+
+    pub fn find_differences(&self, other: &Self) -> Vec<String> {
+        let mut diffs = Vec::new();
+        let mut us = self.mut_state();
+        let mut them = other.mut_state();
+        if us.trap != them.trap {
+            diffs.push("trap".into());
+        }
+
+        let registers = REGISTER_CHECK.lock().unwrap();
+
+        for &(ref register, ref range) in (*registers).iter() {
+            if us.get_register(&register).unwrap()[range.clone()] !=
+                them.get_register(&register).unwrap()[range.clone()] {
+                diffs.push(register.clone());
+            }
+        }
+
+        // XXX: Add flag support.
+        //if us.rflags != them.rflags {
+        //    diffs.push("flags".into());
+        //}
+
+        return diffs;
+    }
+}
+
+impl PartialEq for RegState {
+    fn eq(&self, other: &Self) -> bool {
+        return self.find_differences(other).is_empty();
     }
 }
 
@@ -315,6 +424,16 @@ impl State {
         }
         return Ok(testcases);
     }
+
+    pub fn find_differences(&self, other: &Self) -> Vec<String> {
+        let mut diffs = self.registers.find_differences(&other.registers);
+
+        if self.stack != other.stack {
+            diffs.push("stack".into());
+        }
+
+        return diffs;
+    }
 }
 
 impl fmt::Display for State {
@@ -345,6 +464,8 @@ lazy_static! {
     static ref REG_RE: Regex =
         Regex::new(r"^%(\w+)((?:\s*[0-9a-f]{2})+)$").unwrap();
     static ref BYTES_RE: Regex = Regex::new(r"[0-9a-f]{2}").unwrap();
+    static ref FLAG_RE: Regex =
+        Regex::new(r"^%([a-z0-9\[\]]+)\s+([01])$").unwrap();
     static ref RANGE_RE: Regex =
         Regex::new(concat!(r"^\[ ", addr!(), " - ", addr!(), r" \]$"))
         .unwrap();

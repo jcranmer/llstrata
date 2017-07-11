@@ -76,7 +76,7 @@ macro_rules! register_list {
 }
 
 #[repr(C)]
-#[derive(Default, Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct RegState {
     pub gp_regs: [u64; 16],
     pub sse_regs: [[u8; 32]; 16],
@@ -103,6 +103,30 @@ impl RegState {
         }
     }
 
+    pub fn get_bank_registers(bank_num: u32) -> &'static [&'static str] {
+        static mut GP_REGS : [&'static str; 16] = [""; 16];
+        static mut SSE_REGS : [&'static str; 16] = [""; 16];
+        macro_rules! reg_name {
+            (gp $name:ident: $t:ty, $i: expr) => {
+                GP_REGS[$i] = stringify!($name);
+            };
+            (sse $name:ident, $i: expr) => {
+                SSE_REGS[$i] = stringify!($name);
+            };
+        }
+        unsafe {
+            if GP_REGS[0].is_empty() {
+                register_list!(reg_name gp);
+                register_list!(reg_name sse);
+            }
+            match bank_num {
+                0 => &GP_REGS,
+                1 => &SSE_REGS,
+                _ => panic!("Invalid bank count")
+            }
+        }
+    }
+
     pub fn get_register(&mut self, name: &str) -> Option<&mut [u8]> {
         fn map<T>(val: &mut T) -> Option<&mut [u8]> {
             return Some(as_mut_bytes(val));
@@ -122,6 +146,31 @@ impl RegState {
         register_list!(get_reg gp);
         register_list!(get_reg sse);
         return None;
+    }
+
+    pub fn get_flag(&mut self, name: &str) -> Option<(&mut u64, u8)> {
+        macro_rules! get_flag {
+            (flag 0, $shift:expr) => { };
+            (flag 1, $shift:expr) => { };
+            (flag $n:expr, $shift:expr) => {
+                if name == $n {
+                    return Some((&mut self.rflags, $shift));
+                }
+            };
+        }
+        register_list!(get_flag flags);
+        return None;
+    }
+}
+
+impl Default for RegState {
+    fn default() -> Self {
+        return Self {
+            gp_regs: Default::default(),
+            sse_regs: Default::default(),
+            trap: Default::default(),
+            rflags: 0x00000002,
+        }
     }
 }
 
@@ -232,7 +281,7 @@ pub fn write_asm(out: &mut io::Write) -> io::Result<()> {
                 8 * $i, stringify!($name))?;
         };
         (sse $name:ident, $i:expr) => {
-            writeln!(out, "vmovapd %{1}, {0}+asm_register_struct(%rip)",
+            writeln!(out, "vmovapd {0}+asm_register_struct(%rip), %{1}",
                 gp_size + 32 * $i, stringify!($name))?;
         };
     }
@@ -242,7 +291,7 @@ pub fn write_asm(out: &mut io::Write) -> io::Result<()> {
                 8 * $i, stringify!($name))?;
         };
         (sse $name:ident, $i:expr) => {
-            writeln!(out, "vmovapd {0}+asm_register_struct(%rip), %{1}",
+            writeln!(out, "vmovapd %{1}, {0}+asm_register_struct(%rip)",
                 gp_size + 32 * $i, stringify!($name))?;
         };
     }

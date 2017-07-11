@@ -14,7 +14,7 @@ mod state;
 use std::env;
 use std::fs::File;
 use std::io;
-use state::{ResultExt,State};
+use state::{only_compare_registers,ResultExt,State};
 use exec::link_file;
 
 fn main() {
@@ -22,8 +22,12 @@ fn main() {
     let program = args[0].clone();
 
     if args.len() < 3 {
-        println!("Usage: {} <testcases> <program a> <program b>", program);
+        println!("Usage: {} <testcases> <program a> [<program b>]", program);
         return;
+    }
+
+    if let Some(reg_str) = args.get(4) {
+        only_compare_registers(&reg_str);
     }
 
     if let Err(ref e) = run_main(&args[1], &args[2], args.get(3).map(|s| &**s)) {
@@ -61,6 +65,8 @@ fn run_main(testcase: &str, test: &str,
                 println!("Testcase {} differs", i);
                 println!("Expected:\n{}", gold);
                 println!("Found:\n{}", state);
+                println!("Differences: {}",
+                         gold.find_differences(&state).join(", "));
             }
         } else {
             println!("Testcase {}:\n{}", i, state);
