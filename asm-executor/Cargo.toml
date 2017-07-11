@@ -8,7 +8,7 @@ build = "src/build.rs"
 error-chain = "~0.10.0"
 lazy_static = "~0.2.0"
 libc = "~0.2.0"
-llvm-sys = "0.4.0"
+llvm-sys = "40.0"
 regex = "~0.2.0"
 
 [build-dependencies]

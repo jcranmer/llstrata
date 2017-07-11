@@ -11,6 +11,7 @@ mod errors {
             Null(::std::ffi::NulError);
             Fmt(::std::num::ParseIntError);
             Io(::std::io::Error);
+            Ffi(::std::ffi::IntoStringError);
         }
     }
 }
@@ -30,6 +31,13 @@ impl fmt::Display for RegState {
 }
 
 impl RegState {
+    fn mut_state(&self) -> &mut arch::host::RegState {
+        unsafe {
+            (&self._state as *const arch::host::RegState
+                as *mut arch::host::RegState).as_mut().unwrap()
+        }
+    }
+
     /// Allocate a new register state with the stack pointer initially pointing
     /// at the given address.
     pub fn new(sp: u64) -> RegState {
@@ -43,6 +51,10 @@ impl RegState {
         self.set_register_bytes(reg, arch::as_bytes(&val))
     }
 
+    pub fn set_stack_pointer(&mut self, val: u64) {
+        *self._state.get_stack_register() = val;
+    }
+
     pub fn set_register_bytes(&mut self, reg: &str, val: &[u8]) -> Result<()> {
         self._state.get_register(reg)
             .ok_or(format!("{} is not a register", reg).into())
@@ -53,6 +65,12 @@ impl RegState {
                 ptr.copy_from_slice(val);
                 return Ok(());
             })
+    }
+
+    pub fn get_register_bytes(&self, reg: &str) -> Result<&[u8]> {
+        self.mut_state().get_register(reg)
+            .ok_or(format!("{} is not a register", reg).into())
+            .map(|s| &*s)
     }
 
     pub fn parse_text(file: &mut io::BufRead) -> Result<RegState> {
@@ -119,6 +137,13 @@ pub struct Memory {
 }
 
 impl Memory {
+    pub fn allocate(base: u64, size: usize,
+                    perms: Permissions) -> Memory {
+        let mut contents = Vec::with_capacity(size);
+        contents.resize(size, 0);
+        return Memory { base, contents, flags: perms };
+    }
+
     pub fn parse_text(file: &mut io::BufRead,
                       perms: Permissions) -> Result<Memory> {
         let mut line = String::new();
