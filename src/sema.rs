@@ -624,31 +624,84 @@ macro_rules! suffix {
     (u32) => { "l" };
     (u64) => { "q" };
 }
+macro_rules! shift_width {
+    (u8) => { "$0x8" };
+    (u16) => { "$0x10" };
+    (u32) => { "$0x20" };
+}
 macro_rules! reg_size {
-    (rax, u8) => { "%al" };
-    (rbx, u8) => { "%bl" };
-    (rcx, u8) => { "%cl" };
-    (rdx, u8) => { "%dl" };
-    ($reg:ident, u8) => { concat!("%", stringify!($reg), "b") };
-    ($reg:ident, u16) => { concat!("%", stringify!($reg), "w") };
-    ($reg:ident, u32) => { concat!("%", stringify!($reg), "d") };
-    ($reg:ident, u64) => { concat!("%", stringify!($reg), "") };
+    (r8d, $ty:ident) => { reg_size!(r8, $ty); };
+    (r9d, $ty:ident) => { reg_size!(r9, $ty); };
+    (r12d, $ty:ident) => { reg_size!(r12, $ty); };
+    (r13d, $ty:ident) => { reg_size!(r13, $ty); };
+    ($reg:ident, $ty:ident) => { concat!("%", sub_reg!($reg, $ty)) };
+}
+macro_rules! sub_reg {
+    (rax, u8) => { "al" };
+    (rbx, u8) => { "bl" };
+    (rcx, u8) => { "cl" };
+    (rdx, u8) => { "dl" };
+    (rax, u16) => { "ax" };
+    (rbx, u16) => { "bx" };
+    (rcx, u16) => { "cx" };
+    (rdx, u16) => { "dx" };
+    (rax, u32) => { "eax" };
+    (rbx, u32) => { "ebx" };
+    (rcx, u32) => { "ecx" };
+    (rdx, u32) => { "edx" };
+    ($reg:ident, u8) => { concat!(stringify!($reg), "b") };
+    ($reg:ident, u16) => { concat!(stringify!($reg), "w") };
+    ($reg:ident, u32) => { concat!(stringify!($reg), "d") };
+    ($reg:ident, u64) => { concat!(stringify!($reg), "") };
+}
+macro_rules! instr {
+    ($opcode:ident, $size:ident, $arg1:ident, $arg2:ident) => {
+        concat!("\n  ", stringify!($opcode), suffix!($size), " ",
+            reg_size!($arg1, $size), ", ", reg_size!($arg2, $size));
+    };
+    (e $opcode:ident, $size:ident, $arg1:expr, $arg2:ident) => {
+        concat!("\n  ", stringify!($opcode), suffix!($size), " ",
+            $arg1, ", ", reg_size!($arg2, $size));
+    };
+    (e $opcode:ident, $size:ident, $arg1:expr, $arg2:ident # avsext) => {
+        concat!("\n  ", stringify!($opcode), suffix!($size), " ",
+            $arg1, ", ", reg_size!($arg2, $size), " # avoid sign extend when doing the or");
+    };
+    ($opcode:ident) => {
+        concat!("\n  ", stringify!($opcode));
+    };
+    ($opcode:ident, $size:ident, $arg:ident) => {
+        concat!("\n  ", stringify!($opcode), suffix!($size), " ",
+            reg_size!($arg, $size));
+    };
+    (nosuffix $opcode:ident, $size:ident, $arg:ident) => {
+        concat!("\n  ", stringify!($opcode), " ", reg_size!($arg, $size));
+    };
+    (comment $comment:expr) => {
+        concat!("\n  # ", $comment);
+    };
+    (jump $opcode:ident $label:ident) => {
+        concat!("\n  ", stringify!($opcode), " .", stringify!($label));
+    };
+    (label $label:ident) => {
+        concat!("\n.", stringify!($label), ":");
+    };
 }
 macro_rules! make_string {
     (opt $prefix: expr, vals()) => { "" };
-    (opt $prefix: expr, vals($($val:ident),*)) => {
+    (opt $prefix: expr, vals($($val:expr),*)) => {
         make_string!($prefix, vals($($val),*))
     };
-    ($prefix: expr, vals($($val:ident),*)) => {
+    ($prefix: expr, vals($($val:expr),*)) => {
         concat!("#! ", $prefix, " ",
-                strata_str!($(stringify!($val)),*),
+                strata_str!($($val),*),
                 "\n");
     }
 }
 macro_rules! function {
     (fn $strname:expr, $name:path
-     [$($in_reg:ident),*] -> ($($out_reg:ident),*)
-     : ($($undef_reg:ident),*) {
+     [$($in_reg:expr),*] -> ($($out_reg:expr),*)
+     : ($($undef_reg:expr),*) {
      doc($doc:expr),
      $code:expr}) => {
         function!(fn $strname; ($name)
@@ -656,14 +709,14 @@ macro_rules! function {
                   { doc($doc), $code });
     };
     (fn $strname:expr; ($name:expr)
-     [$($in_reg:ident),*] -> ($($out_reg:ident),*)
-     : ($($undef_reg:ident),*) {
+     [$($in_reg:expr),*] -> ($($out_reg:expr),*)
+     : ($($undef_reg:expr),*) {
      doc($doc:expr),
      $code:expr}) => {
         functions.insert($strname, FunctionInfo {
             name: $strname,
-            def_in: vec![$(stringify!($in_reg)),*],
-            live_out: vec![$(stringify!($out_reg)),*],
+            def_in: vec![$($in_reg),*],
+            live_out: vec![$($out_reg),*],
             llvm_func: Box::new($name),
             assembly: concat!("  .text
   .globl ", $strname, "
@@ -684,148 +737,154 @@ macro_rules! function {
     }
 }
 macro_rules! read_eflag {
-    ($flag:ident, $reg:ident, $setcc:ident) => {
-        function!(fn concat!("read_", stringify!($flag), "_into_",
-                    stringify!($reg)),
-                    read_eflag_to_register[$flag] -> ($reg) : () {
-            doc(concat!("read the ", stringify!($flag), " flag into ",
-                stringify!($reg))), concat!("
-  movq $0x0, %", stringify!($reg), "
-  ", stringify!($setcc), " ", reg_size!($reg, u8))
+    ($flag:expr, $reg:ident, $setcc:ident) => {
+        function!(fn concat!("read_", $flag, "_into_", stringify!($reg)),
+                    read_eflag_to_register[$flag] -> (stringify!($reg)) : () {
+            doc(concat!("read the ", $flag, " flag into ",
+                stringify!($reg))), concat!(
+                    instr!(e mov, u64, "$0x0", $reg),
+                    instr!(nosuffix $setcc, u8, $reg))
         });
     }
 }
 macro_rules! read_eflags {
-    ($flag:ident, [$($reg:ident),*], $setcc:ident) => {
+    ($flag:expr, [$($reg:ident),*], $setcc:ident) => {
         $(read_eflag!($flag, $reg, $setcc);)*
     }
 }
 macro_rules! set_eflag {
-    ($flag:ident, $val:expr) => {
-        function!(fn concat!("set_", stringify!($flag)),
-                    set_eflag[] -> ($flag) : (r14, r15) {
-            doc(concat!("set the ", stringify!($flag), " flag")), concat!("
-  pushfq
-  popq %r15
-  movq ", $val, ", %r14 # avoid sign extend when doing the or
-  orq %r14, %r15
-  pushq %r15
-  popfq")
+    ($flag:expr, $val:expr) => {
+        function!(fn concat!("set_", $flag),
+                    set_eflag[] -> ($flag) : ("r14", "r15") {
+            doc(concat!("set the ", $flag, " flag")), concat!(
+                instr!(pushfq),
+                instr!(pop, u64, r15),
+                instr!(e mov, u64, $val, r14 # avsext),
+                instr!(or, u64, r14, r15),
+                instr!(push, u64, r15),
+                instr!(popfq))
         });
     }
 }
 macro_rules! clear_eflag {
-    ($flag:ident, $val:expr) => {
-        function!(fn concat!("clear_", stringify!($flag)),
-                    clear_eflag[] -> ($flag) : (r15) {
-            doc(concat!("clear the ", stringify!($flag), " flag")), concat!("
-  pushfq
-  popq %r15
-  andq ", $val, ", %r15
-  pushq %r15
-  popfq")
+    ($flag:expr, $val:expr) => {
+        function!(fn concat!("clear_", $flag),
+                    clear_eflag[] -> ($flag) : ("r15") {
+            doc(concat!("clear the ", $flag, " flag")), concat!(
+                instr!(pushfq),
+                instr!(pop, u64, r15),
+                instr!(e and, u64, $val, r15),
+                instr!(push, u64, r15),
+                instr!(popfq))
         });
     }
 }
 macro_rules! write_eflag {
-    ($flag:ident, $reg:ident, $set:expr, $clear:expr) => {
-        function!(fn concat!("write_", stringify!($reg), "_to_",
-                    stringify!($flag)),
-                    write_register_to_eflag[$reg] -> ($flag) : (r14, r15) {
-            doc(concat!("set the ", stringify!($flag), " flag")), concat!("
-  # read flags
-  pushfq
-  popq %r15
-
-  # zero out ", stringify!($flag), "
-  movq ", $clear, ", %r14 # avoid sign extend when doing the or
-  andq %r14, %r15
-
-  # replicate the last bit in ", stringify!($reg), " to all bits
-  movb %", stringify!($reg), ", %r14b
-  shlq $0x3f, %r14
-  sarq $0x3f, %r14
-
-  # test if we need to set the flag
-  testq %r14, %r14
-  je .lbl0
-  movq ", $set, ", %r14 # avoid sign extend when doing the or
-  orq %r14, %r15
-
-.lbl0:
-
-  # write new flags
-  pushq %r15
-  popfq")
+    ($flag:expr, $reg:ident, $set:expr, $clear:expr) => {
+        function!(fn concat!("write_", sub_reg!($reg, u8), "_to_", $flag),
+                    write_register_to_eflag
+                    [sub_reg!($reg, u8)] -> ($flag) : ("r14", "r15") {
+            doc(concat!("set the ", $flag, " flag")), concat!(
+                instr!(comment "read flags"),
+                instr!(pushfq),
+                instr!(pop, u64, r15), "\n",
+                instr!(comment concat!("zero out ", $flag)),
+                instr!(e mov, u64, $clear, r14 # avsext),
+                instr!(and, u64, r14, r15), "\n",
+                instr!(comment concat!("replicate the last bit in ",
+                                       sub_reg!($reg, u8), " to all bits")),
+                instr!(mov, u8, $reg, r14),
+                instr!(e shl, u64, "$0x3f", r14),
+                instr!(e sar, u64, "$0x3f", r14), "\n",
+                instr!(comment "test if we need to set the flag"),
+                instr!(test, u64, r14, r14),
+                instr!(jump je lbl0),
+                instr!(e mov, u64, $set, r14 # avsext),
+                instr!(or, u64, r14, r15), "\n",
+                instr!(label lbl0), "\n",
+                instr!(comment "write new flags"),
+                instr!(push, u64, r15),
+                instr!(popfq))
         });
     }
 }
 macro_rules! impl_eflag {
-    ($flag:ident, $set:expr, $clear:expr) => {
+    ($flag:expr, $set:expr, $clear:expr) => {
         set_eflag!($flag, $set);
         clear_eflag!($flag, $clear);
-        write_eflag!($flag, cl, $set, $clear);
-        write_eflag!($flag, dl, $set, $clear);
+        write_eflag!($flag, rcx, $set, $clear);
+        write_eflag!($flag, rdx, $set, $clear);
     }
 }
 macro_rules! set_szp {
-    ($reg:ident, $postfix:expr, $size:ty) => {
-        function!(fn concat!("set_szp_for_", stringify!($reg)),
-                    set_szp<$size>[$reg] -> (zf, pf, sf) : (r14, r15) {
+    ($reg:ident, $size:ident) => {
+        function!(fn concat!("set_szp_for_", sub_reg!($reg, $size)),
+                    set_szp<$size>
+                    [sub_reg!($reg, $size)] ->
+                    ("zf", "pf", "sf") : ("r14", "r15") {
             doc("set the zf, sf, pf according to the result in %r8"),
-            concat!("
-  pushfq
-  popq %r15
-  # clear zf, sf and pf
-  andq $0xffffff3b, %r15
-  # set zf if necessary
-  test", $postfix, " %", stringify!($reg), ", %", stringify!($reg), "
-  jne .lbl0
-  orq $0x40, %r15
-.lbl0:
-  # set sf if necessary
-  test", $postfix, " %", stringify!($reg), ", %", stringify!($reg), "
-  jns .lbl1
-  movq $0x80, %r14 # avoid sign extend when doing the or
-  orq %r14, %r15
-.lbl1:
-  # set zf if necessary
-  test", $postfix, " %", stringify!($reg), ", %", stringify!($reg), "
-  jnp .lbl2
-  orq $0x4, %r15
-.lbl2:
-  pushq %r15
-  popfq")
+            concat!(
+                instr!(pushfq),
+                instr!(pop, u64, r15),
+                instr!(comment "clear zf, sf and pf"),
+                instr!(e and, u64, "$0xffffff3b", r15),
+                instr!(comment "set zf if necessary"),
+                instr!(test, $size, $reg, $reg),
+                instr!(jump jne lbl0),
+                instr!(e or, u64, "$0x40", r15),
+                instr!(label lbl0),
+                instr!(comment "set sf if necessary"),
+                instr!(test, $size, $reg, $reg),
+                instr!(jump jns lbl1),
+                instr!(e mov, u64, "$0x80", r14 # avsext),
+                instr!(or, u64, r14, r15),
+                instr!(label lbl1),
+                instr!(comment "set zf if necessary"),
+                instr!(test, $size, $reg, $reg),
+                instr!(jump jnp lbl2),
+                instr!(e or, u64, "$0x4", r15),
+                instr!(label lbl2),
+                instr!(push, u64, r15),
+                instr!(popfq))
         });
     }
 }
 macro_rules! move_small_large {
     ($rs1:ident, $rs2:ident, $rl:ident, $size:ident,
      $lsize:ident, $ss:expr, $ls:expr) => {
-        function!(fn concat!("move_0", $ss, "_0", $ls, "_", stringify!($rs1),
-                             "_", stringify!($rs2), "_", stringify!($rl)),
-                    move_small_to_large<$size>[$rs1, $rs2] -> ($rl) : (r14, r15) {
-            doc(concat!("moves ", stringify!($rs1), " and ", stringify!($rs2),
-                " to ", stringify!($rl), ".")), concat!("
-  pushfq
-  mov", suffix!($size), " %", stringify!($rs2), ", ", reg_size!(r15, $size), "
-  shlq $", $ss, ", %r15
-  mov", suffix!($size), " %", stringify!($rs1), ", ", reg_size!(r14, $size), "
-  orq %r14, %r15
-  mov", suffix!($lsize), " ", reg_size!(r15, $lsize), ", %", stringify!($rl), "
-  popfq")
+        function!(fn concat!("move_0", $ss, "_0", $ls, "_",
+                             sub_reg!($rs1, $size), "_",
+                             sub_reg!($rs2, $size), "_",
+                             sub_reg!($rl, $lsize)),
+                    move_small_to_large<$size>
+                    [sub_reg!($rs1, $size), sub_reg!($rs2, $size)] ->
+                    (sub_reg!($rl, $lsize)) : ("r15") {
+            doc(concat!("moves ", sub_reg!($rs1, $size), " and ",
+                sub_reg!($rs2, $size), " to ", sub_reg!($rl, $lsize), ".")),
+                concat!(
+                    instr!(pushfq),
+                    instr!(mov, $size, $rs2, r15),
+                    instr!(e shl, u64, shift_width!($size), r15),
+                    instr!(mov, $size, $rs1, r15),
+                    instr!(mov, $lsize, r15, $rl),
+                    instr!(popfq))
         });
-        function!(fn concat!("move_0", $ls, "_0", $ss, "_", stringify!($rl),
-                             "_", stringify!($rs1), "_", stringify!($rs2)),
-                    move_large_to_small<$size>[$rl] -> ($rs1, $rs2) : (r15) {
-            doc(concat!("moves ", stringify!($rl), " to ", stringify!($rs1),
-                " to ", stringify!($rs2), ".")), concat!("
-  pushfq
-  mov", suffix!($lsize), " %", stringify!($rl), ", %r15
-  mov", suffix!($size), " %r15d, %", stringify!($rs1), "
-  shrq $", $ss, ", %r15
-  mov", suffix!($size), " %r15d, %", stringify!($rs2), "
-  popfq")
+        function!(fn concat!("move_0", $ls, "_0", $ss, "_",
+                             sub_reg!($rl, $lsize), "_",
+                             sub_reg!($rs1, $size), "_",
+                             sub_reg!($rs2, $size)),
+                    move_large_to_small<$size>
+                    [sub_reg!($rl, $lsize)] ->
+                    (sub_reg!($rs1, $size), sub_reg!($rs2, $size)) : ("r15") {
+            doc(concat!("moves ", sub_reg!($rl, $lsize), " to ",
+                sub_reg!($rs1, $size), " and ", sub_reg!($rs2, $size), ".")),
+                concat!(
+                    instr!(pushfq),
+                    instr!(mov, $lsize, $rl, r15),
+                    instr!(mov, $size, r15, $rs1),
+                    instr!(e shr, u64, shift_width!($size), r15),
+                    instr!(mov, $size, r15, $rs2),
+                    instr!(popfq))
         });
     }
 }
@@ -844,21 +903,23 @@ macro_rules! move_bytes {
         fn close_function<'a>(func: &'a Function, builder: &Builder) {
             write_reg_byte(func, builder, $index);
         }
-        function!(fn concat!("move_", stringify!($byte_reg), "_to_byte_",
+        function!(fn concat!("move_", sub_reg!($byte_reg, u8), "_to_byte_",
                              stringify!($index), "_of_", stringify!($reg)),
-                    close_function[$byte_reg, $reg] -> ($reg) : (r14, r15) {
-            doc(concat!("move ", stringify!($byte_reg), " to the byte ",
-                stringify!($index), " of ", stringify!($reg))), concat!("
-  pushfq
-  xorq %r15, %r15
-  movb %", stringify!($byte_reg), ", %r15b
-  shlq $", $index8, ", %r15
-  movq $0xff, %r14
-  shlq $", $index8, ", %r14
-  notq %r14
-  andq %r14, %", stringify!($reg), "
-  orq %r15, %", stringify!($reg), "
-  popfq")
+                    close_function
+                    [sub_reg!($byte_reg, u8), stringify!($reg)] ->
+                    (stringify!($reg)) : ("r14", "r15") {
+            doc(concat!("move ", sub_reg!($byte_reg, u8), " to the byte ",
+                stringify!($index), " of ", stringify!($reg))), concat!(
+                    instr!(pushfq),
+                    instr!(xor, u64, r15, r15),
+                    instr!(mov, u8, $byte_reg, r15),
+                    instr!(e shl, u64, concat!("$", $index8), r15),
+                    instr!(e mov, u64, "$0xff", r14),
+                    instr!(e shl, u64, concat!("$", $index8), r14),
+                    instr!(not, u64, r14),
+                    instr!(and, u64, r14, $reg),
+                    instr!(or, u64, r15, $reg),
+                    instr!(popfq))
         });
     }};
     ($reg:ident -> $byte_reg:ident, $index:expr, $index8:expr) => {{
@@ -866,15 +927,16 @@ macro_rules! move_bytes {
             read_reg_byte(func, builder, $index);
         }
         function!(fn concat!("move_byte_", stringify!($index), "_of_",
-                             stringify!($reg), "_to_", stringify!($byte_reg)),
-                    close_function[$reg] -> ($byte_reg) : (r15) {
+                             stringify!($reg), "_to_", sub_reg!($byte_reg, u8)),
+                    close_function
+                    [stringify!($reg)] -> (sub_reg!($byte_reg, u8)) : ("r15") {
             doc(concat!("move the byte ", stringify!($index), " of ",
-                stringify!($reg), " to ", stringify!($byte_reg))), concat!("
-  pushfq
-  movq %", stringify!($reg), ", %r15
-  shrq $", $index8, ", %r15
-  movb %r15b, %", stringify!($byte_reg), "
-  popfq")
+                stringify!($reg), " to ", sub_reg!($byte_reg, u8))), concat!(
+                    instr!(pushfq),
+                    instr!(mov, u64, $reg, r15),
+                    instr!(e shr, u64, concat!("$", $index8), r15),
+                    instr!(mov, u8, r15, $byte_reg),
+                    instr!(popfq))
         });
     }};
     (gp $reg:ident, [$($index:tt=$x8:expr),*]) => {
@@ -882,29 +944,29 @@ macro_rules! move_bytes {
         $(move_bytes!(rbx -> $reg, $index, $x8);)*
     }
 }
-        read_eflags!(cf, [rbx, rcx], setnae);
-        read_eflags!(of, [rbx, rcx], seto);
-        read_eflags!(pf, [rbx, rcx], setp);
-        read_eflags!(sf, [rbx, rcx], sets);
-        read_eflags!(zf, [rbx, rcx], setz);
-        impl_eflag!(af, "$0x10", "$0xffffffef");
-        impl_eflag!(cf, "$0x1", "$0xfffffffe");
-        impl_eflag!(of, "$0x800", "$0xfffff7ff");
-        impl_eflag!(pf, "$0x4", "$0xfffffffb");
-        impl_eflag!(sf, "$0x80", "$0xffffff7f");
-        impl_eflag!(zf, "$0x40", "$0xffffffbf");
-        set_szp!(bl, "b", u8);
-        set_szp!(bx, "w", u16);
-        set_szp!(ebx, "l", u32);
-        set_szp!(rbx, "q", u64);
-        move_pair!([r8b, r9b, r10b, r11b, r12b, r13b], [bx, cx, dx],
+        read_eflags!("cf", [rbx, rcx], setnae);
+        read_eflags!("of", [rbx, rcx], seto);
+        read_eflags!("pf", [rbx, rcx], setp);
+        read_eflags!("sf", [rbx, rcx], sets);
+        read_eflags!("zf", [rbx, rcx], setz);
+        impl_eflag!("af", "$0x10", "$0xffffffef");
+        impl_eflag!("cf", "$0x1", "$0xfffffffe");
+        impl_eflag!("of", "$0x800", "$0xfffff7ff");
+        impl_eflag!("pf", "$0x4", "$0xfffffffb");
+        impl_eflag!("sf", "$0x80", "$0xffffff7f");
+        impl_eflag!("zf", "$0x40", "$0xffffffbf");
+        set_szp!(rbx, u8);
+        set_szp!(rbx, u16);
+        set_szp!(rbx, u32);
+        set_szp!(rbx, u64);
+        move_pair!([r8, r9, r10, r11, r12, r13], [rbx, rcx, rdx],
                    u8, u16, "08", "16");
-        move_pair!([r8w, r9w, r10w, r11w, r12w, r13w], [ebx, ecx, edx],
+        move_pair!([r8, r9, r10, r11, r12, r13], [rbx, rcx, rdx],
                    u16, u32, "16", "32");
-        move_pair!([r8d, r9d, r10d, r11d, r12d, r13d], [rbx, rcx, rdx],
+        move_pair!([r8, r9, r10, r11, r12, r13], [rbx, rcx, rdx],
                    u32, u64, "32", "64");
-        move_bytes!(gp r8b, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
-        move_bytes!(gp r9b, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
+        move_bytes!(gp r8, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
+        move_bytes!(gp r9, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
         return functions;
     }
 }

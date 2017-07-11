@@ -24,11 +24,12 @@ fn print_usage(prog: &str, opts: Options) {
     Infer specifications of instruction sets using LLVM and STOKE.
 
     MODE may be one of:
-      init     Initialize a working directory
-      status   Show the status of the learning process
-      generate Generate MCSema lifiting code for the known instructions
-      run      Run the program indefinitely
-      step     Try to learn a single instruction", prog);
+      check-base Check the correctness of the base instructions
+      init       Initialize a working directory
+      status     Show the status of the learning process
+      generate   Generate MCSema lifiting code for the known instructions
+      run        Run the program indefinitely
+      step       Try to learn a single instruction", prog);
     print!("{}", opts.usage(&brief));
     process::exit(1);
 }
@@ -195,6 +196,11 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
                 let end_index = more.find("\n").unwrap();
                 mangle_assembly = mangle_assembly
                     .replace(".lbl", more.split_at(end_index - 1).0);
+            }
+            if name.starts_with("move_") && name.find("byte").is_none() {
+                mangle_assembly = mangle_assembly.replace("  #\n", "");
+                let end = mangle_assembly.rfind("  retq").unwrap();
+                mangle_assembly.truncate(end);
             }
 
             if contents.trim() != mangle_assembly.trim() {
