@@ -160,12 +160,6 @@ fn generate(state: &state::State, output: &Path) {
         }
         // XXX: skip for now
         if inst.opcode.contains("xmm") || inst.opcode.contains("ymm") { continue; }
-        if inst.opcode == "movzbq_r64_r8" { continue; }
-        if inst.opcode == "movzbl_r32_rh" { continue; }
-        if inst.opcode == "movzwl_r32_r16" { continue; }
-        if inst.opcode == "decb_r8" { continue; }
-        if inst.opcode == "seto_r8" { continue; }
-        if inst.opcode == "cbtw" { continue; }
         mcsema::translate_instruction(&inst, state, &translation_state, state.get_target_triple());
         if inst.opcode == "movsbw_r16_rh" {
             break;

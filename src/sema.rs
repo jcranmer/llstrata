@@ -232,6 +232,10 @@ fn movq_r64_r64(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn movq_r64_imm64(func: &Function, builder: &Builder) {
+    movq_r64_r64(func, builder)
+}
+
 fn movsbq_r64_r8(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
@@ -474,7 +478,10 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
                       in(cx, bx, cf), out(bx, cf, pf, zf, sf, of));
     base_instruction!(cmoveq_r64_r64, "cmoveq %rcx, %rbx",
                       in(rcx, rbx, zf), out(rbx));
-    // XXX: movq_r64_imm64
+    // Well, this is the base instruction that Strata uses to refer to MOV64ri.
+    // LLVM (and GCC) interpret it as MOV64ri32 instead.
+    base_instruction!(movq_r64_imm64, "movq $0x0, %rbx",
+                      in(), out(rbx));
     base_instruction!(movq_r64_r64, "movq %rcx, %rbx",
                       in(rcx), out(rbx));
     // XXX: movb_r8_rh
@@ -564,7 +571,7 @@ where S: for <'a> Compile<'a> {
     let small_lo = &*func[0];
     let small_hi = &*func[1];
     let shifted = builder.build_shl(
-        small_hi, (mem::size_of::<S>() as u64).compile(ctx));
+        small_hi, ((mem::size_of::<S>() * 8) as u64).compile(ctx));
     let val = builder.build_or(shifted, small_lo);
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, val, 0);
@@ -582,7 +589,7 @@ where S: for <'a> Compile<'a> {
     let small_hi = builder.build_zext(
         builder.build_trunc(
             builder.build_lshr(
-                val, (mem::size_of::<S>() as u64).compile(ctx)),
+                val, ((mem::size_of::<S>() * 8) as u64).compile(ctx)),
             Type::get::<S>(ctx)),
         Type::get::<u64>(ctx));
     let mut ret = Value::new_undef(func.get_signature().get_return());

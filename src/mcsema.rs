@@ -154,7 +154,16 @@ impl <'a> TranslationState<'a> {
                             panic!("Register tied to not-a-register");
                         }
                     }
-                }
+                },
+                OperandType::Immediate => {
+                    let val = real_operands.next()
+                        .expect("Need matching operand");
+                    if let &Operand::Immediate(_) = val {
+                        array.push(Type::get::<u64>(&ctx));
+                    } else {
+                        panic!("Non-integer immediate operand");
+                    }
+                },
                 _ => {
                     println!("{:?}", op.kind);
                     panic!("Shouldn't reach here");
@@ -212,6 +221,14 @@ impl <'a> TranslationState<'a> {
                             panic!("Expected a register here");
                         }
                     },
+                    OperandType::Immediate => {
+                        assert!(result.2.is_none(), "Too many immediates");
+                        if let &Operand::Immediate(val) = real_op {
+                            result.2 = Some(val);
+                        } else {
+                            panic!("Bad immediate type");
+                        }
+                    }
                     _ => {
                         unimplemented!();
                     }
@@ -254,7 +271,8 @@ impl <'a> TranslationState<'a> {
 
         let mut in_types = Vec::new();
         let mut out_types = Vec::new();
-        let (in_regs, out_regs) = registers.0;
+        let (in_regs, out_regs, imm) = registers.0;
+        assert!(imm.is_none(), "Pseudo functions should not use imms");
         for _ in in_regs {
             in_types.push(Type::get::<u64>(&ctx));
         }
@@ -299,7 +317,7 @@ impl <'a> TranslationState<'a> {
     }
 }
 
-type RegInfo<'a> = (Vec<&'a Register>, Vec<&'a Register>);
+type RegInfo<'a> = (Vec<&'a Register>, Vec<&'a Register>, Option<i64>);
 type FlagInfo = (Vec<String>, Vec<String>);
 type RegState<'a> = (HashMap<&'a Register, &'a Value>,
                      HashMap<String, &'a Value>);
@@ -348,7 +366,7 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
     }
 
     // For input...
-    let (input_registers, output_registers) =
+    let (input_registers, output_registers, _) =
         xlation.get_registers(representative);
     let (input_flags, output_flags) = xlation.get_flags(representative);
     for (i, register) in input_registers.iter().enumerate() {
@@ -364,13 +382,14 @@ pub fn translate_instruction<'a>(inst: &InstructionInfo,
 
     for step in &insts[0..insts.len() - 1] {
         let inner = xlation.get_function(step);
-        let (in_regs, out_regs) = xlation.get_registers(step);
+        let (in_regs, out_regs, imm) = xlation.get_registers(step);
         let (in_flags, out_flags) = xlation.get_flags(step);
         let args : Vec<&Value> = in_regs.iter()
             .map(|reg| xlation.get_register(reg, mri, &reg_state))
             .chain(in_flags.iter()
                    .map(|flag| xlation.get_flag(flag, &reg_state))
-            ).collect();
+            ).chain(imm.map(|val| val.compile(&ctxt)).into_iter())
+            .collect();
         let call = builder.build_call(inner, &args);
         for (i, reg) in out_regs.iter().enumerate() {
             xlation.set_register(reg, mri, &mut reg_state,
@@ -442,6 +461,11 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
                         if reg.name != "EFLAGS" {
                             parts.push(format!("reg:{}", reg.name));
                         }
+                    },
+                    OperandType::Immediate => {
+                        println!("Skipping generation for {}",
+                                 base[0].opcode.name);
+                        continue;
                     },
                     _ => {
                         panic!("Not handling");
