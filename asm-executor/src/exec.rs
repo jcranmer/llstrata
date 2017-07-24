@@ -107,7 +107,9 @@ fn link_object(path: &str, buffer: LLVMMemoryBufferRef) ->
     let symbol_ref = unsafe { LLVMGetSymbols(object_file) };
     while unsafe { LLVMIsSymbolIteratorAtEnd(object_file, symbol_ref) } == 0 {
         let name = unsafe { CStr::from_ptr(LLVMGetSymbolName(symbol_ref)) };
-        if !name.to_bytes().is_empty() {
+        // Ignore the .lbl symbols from strat functions.
+        if !name.to_string_lossy().starts_with(".lbl") &&
+            !name.to_bytes().is_empty() {
             break;
         }
         unsafe { LLVMMoveToNextSymbol(symbol_ref) };
@@ -138,8 +140,39 @@ fn link_object(path: &str, buffer: LLVMMemoryBufferRef) ->
     }));
 }
 
+#[derive(Debug, Copy, Clone)]
+enum PseudoReg {
+    Register(&'static str),
+    Flag(&'static str)
+}
 
-type RegMap = Vec<(&'static str, &'static str)>;
+impl PseudoReg {
+    fn read<'a>(&self, state: &'a RegState) -> Result<&'a [u8]> {
+        static TRUE: [u8; 8]  = [1, 0, 0, 0, 0, 0, 0, 0];
+        static FALSE: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+        match *self {
+            PseudoReg::Register(ref name) =>
+                state.get_register_bytes(name),
+            PseudoReg::Flag(ref name) =>
+                Ok(if state.get_flag(name)? { &TRUE } else { &FALSE })
+        }
+    }
+    fn write(&self, state: &mut RegState, val: &[u8]) -> Result<()> {
+        match *self {
+            PseudoReg::Register(ref name) => {
+                state.set_register_bytes(name, val)
+            },
+            PseudoReg::Flag(ref name) => {
+                state.set_flag(name, val[0] == 1)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RegMap {
+    regs: Vec<(PseudoReg, PseudoReg)>
+}
 
 struct IRFragment {
     exec_engine: LLVMExecutionEngineRef,
@@ -168,24 +201,19 @@ impl ExecFragment for IRFragment {
         real_state.registers.set_stack_pointer(real_state.stack.base + 0x20);
 
         fn copy_registers(from: &RegState, to: &mut RegState,
-                          list: &RegMap) -> Result<()> {
-            for &(from_reg, to_reg) in list {
-                if to_reg == "" {
-                    panic!("Need to implement stack support!");
-                } else {
-                    to.set_register_bytes(to_reg,
-                                          from.get_register_bytes(from_reg)?)?;
-                }
+                          list: &RegMap, flag_to_reg: bool) -> Result<()> {
+            for &(from_reg, to_reg) in &list.regs {
+                to_reg.write(to, from_reg.read(from)?)?;
             }
             return Ok(());
         }
 
         copy_registers(&state.registers, &mut real_state.registers,
-                       &self.in_regs)
+                       &self.in_regs, true)
             .unwrap();
         execute_assembly(&mut real_state, addr as usize);
         copy_registers(&real_state.registers, &mut state.registers,
-                       &self.out_regs)
+                       &self.out_regs, false)
             .unwrap();
     }
 }
@@ -221,7 +249,14 @@ fn link_ir(path: &str,
         out_module
     };
 
-    let function = unsafe { LLVMGetFirstFunction(module) };
+    let function = unsafe {
+        let mut func = LLVMGetFirstFunction(module);
+        while LLVMGetFirstBasicBlock(func).is_null() {
+            func = LLVMGetNextFunction(func);
+            assert!(!func.is_null(), "No declared functions?");
+        }
+        func
+    };
     fn get_attr(function: LLVMValueRef, name: &str) -> &str {
         let len = name.len();
         let chars = name.as_bytes().as_ptr() as *const i8;
@@ -252,19 +287,26 @@ fn link_ir(path: &str,
                      reg_parms: &[(&'static str, u8)]) -> RegMap {
         let reg_list = from_regs.split(" ");
         let mut parm_iter = reg_parms.iter();
-        return reg_list.map(|reg| {
+        let regs : Vec<_> = reg_list.map(|reg| {
+            let psuedo = if RegState::is_register(reg) {
+                PseudoReg::Register(reg)
+            } else {
+                PseudoReg::Flag(reg)
+            };
             while let Some(&(parm_name, parm_size)) = parm_iter.next() {
                 if parm_size != 8 {
                     continue; // XXX: check against size
                 }
-                return (reg, parm_name);
+                return (psuedo, PseudoReg::Register(parm_name));
             }
-            return (reg, "");
+            return (psuedo, PseudoReg::Register(""));
         }).collect();
+
+        return RegMap { regs };
     }
     let in_map = map_registers(in_regs, &abi_in);
     let mut out_map = map_registers(out_regs, &abi_out);
-    for pair in out_map.iter_mut() {
+    for pair in out_map.regs.iter_mut() {
         *pair = (pair.1, pair.0);
     }
 

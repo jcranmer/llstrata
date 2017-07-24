@@ -46,27 +46,38 @@ lazy_static! {
             .collect()
         )
     };
+    static ref FLAG_CHECK: Mutex<Vec<String>> = {
+        Mutex::new((0..arch::host::FLAG_BANKS)
+            .flat_map(|bank| arch::host::RegState::get_bank_flags(bank))
+            .map(|&s| String::from(s))
+            .collect()
+        )
+    };
 }
 
 pub fn only_compare_registers(reg_list: &str) {
-    let regs : Vec<_> = reg_list.split(" ")
+    let (regs, flags) : (Vec<_>, Vec<_>) = reg_list.split(" ")
         .map(|reg| {
             if let Some(idx) = reg.find(":") {
                 let (reg, idx) = reg.split_at(idx);
                 (reg, usize::from_str(&idx[1..]).expect("Can't parse register"))
-            } else {
+            } else if RegState::is_register(reg) {
                 let size = REGISTER_CHECK.lock().unwrap().iter()
                     .find(|&&(ref r, ref size)| r == reg)
                     .expect("Unknown register")
                     .1.end;
                 (reg, size)
+            } else {
+                (reg, 1)
             }
         })
         .map(|(reg, size)| {
             (String::from(reg), 0..size)
         })
-        .collect();
+        .partition(|&(ref name, _)| RegState::is_register(&name));
     *REGISTER_CHECK.lock().unwrap() = regs;
+    *FLAG_CHECK.lock().unwrap() =
+        flags.into_iter().map(|(name, _)| name).collect()
 }
 
 impl RegState {
@@ -122,13 +133,19 @@ impl RegState {
             })
     }
 
-    pub fn get_flag(&mut self, flag: &str) -> Result<bool> {
+    pub fn get_flag(&self, flag: &str) -> Result<bool> {
         self.mut_state().get_flag(flag)
             .ok_or(format!("{} is not a flag", flag).into())
             .and_then(|(flags, index)| {
                 let mask = 1 << index;
                 return Ok(*flags & mask == mask);
             })
+    }
+
+    pub fn is_register(name: &str) -> bool {
+        (0..arch::host::REGISTER_BANKS)
+            .flat_map(|bank| arch::host::RegState::get_bank_registers(bank))
+            .any(|&reg| reg == name)
     }
 
     pub fn parse_text(file: &mut io::BufRead) -> Result<RegState> {
@@ -218,10 +235,13 @@ impl RegState {
             }
         }
 
-        // XXX: Add flag support.
-        //if us.rflags != them.rflags {
-        //    diffs.push("flags".into());
-        //}
+        let flags = FLAG_CHECK.lock().unwrap();
+        for flag in (*flags).iter() {
+            println!("{}", flag);
+            if self.get_flag(&flag).unwrap() != other.get_flag(&flag).unwrap() {
+                diffs.push(flag.clone());
+            }
+        }
 
         return diffs;
     }

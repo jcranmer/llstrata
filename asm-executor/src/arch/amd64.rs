@@ -49,7 +49,7 @@ macro_rules! register_list {
         $reg!(sse ymm15, 15);
     };
 
-    ($reg:ident flags) => {
+    ($reg:ident flags) => {{
         $reg!(flag "cf"      ,  0);
         $reg!(flag 1         ,  1);
         $reg!(flag "pf"      ,  2);
@@ -72,7 +72,7 @@ macro_rules! register_list {
         $reg!(flag "vif"     , 19);
         $reg!(flag "vip"     , 20);
         $reg!(flag "id"      , 21);
-    };
+    }};
 }
 
 #[repr(C)]
@@ -85,6 +85,7 @@ pub struct RegState {
 }
 
 pub const REGISTER_BANKS : u32 = 2;
+pub const FLAG_BANKS : u32 = 1;
 
 impl RegState {
     pub fn get_stack_register(&mut self) -> &mut u64 {
@@ -161,6 +162,19 @@ impl RegState {
         register_list!(get_flag flags);
         return None;
     }
+
+    pub fn get_bank_flags(bank_num: u32) -> &'static [&'static str] {
+        // These are the only flags that people care about in EFLAGS on a
+        // regular basis, and should be the only ones used. Since we're only
+        // using these for default flag checking, this hardcoded list should
+        // suffice.
+        static EFLAGS : [&'static str; 6] = ["cf", "pf", "af", "zf", "sf", "of"];
+        match bank_num {
+            0 => &EFLAGS,
+            _ => panic!("Invalid bank count")
+        }
+    }
+
 }
 
 impl Default for RegState {
