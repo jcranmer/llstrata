@@ -42,8 +42,8 @@ extern "C" {
 }
 
 pub struct TranslationState<'a> {
-    module: CSemiBox<'a, Module>,
-    builder: CSemiBox<'a, Builder>,
+    pub module: CSemiBox<'a, Module>,
+    pub builder: CSemiBox<'a, Builder>,
     pub state: &'a State<'a>
 }
 
@@ -69,6 +69,24 @@ impl <'a> TranslationState<'a> {
             state: state
         };
         return xlation;
+    }
+
+    fn get_llvm_type<'b>(&self, reg: &Register, ctx: &'b Context) -> &'b Type {
+        // XXX: We really want to look this stuff up. Until I start plumbing up
+        // register bank information, hardcoding is really the only thing I can
+        // do.
+        let mri = self.state.get_target_triple().register_info();
+        let top_reg = reg.get_top_register(mri);
+        if top_reg.name.starts_with("ZMM") {
+            return Type::get::<[u64; 4]>(ctx);
+        } else {
+            return u64::get_type(ctx);
+        }
+    }
+
+    fn get_llvm_type_for_rc<'b>(&self, rc: &RegisterClass, ctx: &'b Context) -> &'b Type {
+        let mri = self.state.get_target_triple().register_info();
+        return self.get_llvm_type(rc.get_registers(mri)[0], ctx);
     }
 
     fn get_flags(&self, inst: &Instruction) -> (Vec<String>, Vec<String>) {
@@ -122,7 +140,7 @@ impl <'a> TranslationState<'a> {
             let mut array = if op.write { &mut out_types } else { &mut in_types };
             match op.kind {
                 OperandType::Register(ref rc) => {
-                    array.push(Type::get::<u64>(&ctx));
+                    array.push(self.get_llvm_type_for_rc(rc, &ctx));
                     let real = real_operands.next()
                         .expect("Need matching operand");
                     if rc.name == "GR8" {
@@ -135,7 +153,7 @@ impl <'a> TranslationState<'a> {
                 },
                 OperandType::FixedRegister(ref reg) => {
                     if is_flags(reg) { continue; }
-                    array.push(Type::get::<u64>(&ctx));
+                    array.push(self.get_llvm_type(reg, &ctx));
                 }
                 OperandType::TiedRegister(index) => {
                     real_operands.next()
@@ -143,12 +161,12 @@ impl <'a> TranslationState<'a> {
                     let other = &inst.opcode.get_operands()[index as usize];
                     assert!(op.write != other.write);
                     match other.kind {
-                        OperandType::Register(_) => {
-                            array.push(Type::get::<u64>(&ctx));
+                        OperandType::Register(ref rc) => {
+                            array.push(self.get_llvm_type_for_rc(rc, &ctx));
                         },
                         OperandType::FixedRegister(ref reg) => {
                             if is_flags(reg) { continue; }
-                            array.push(Type::get::<u64>(&ctx));
+                            array.push(self.get_llvm_type(reg, &ctx));
                         },
                         _ => {
                             panic!("Register tied to not-a-register");
@@ -273,11 +291,11 @@ impl <'a> TranslationState<'a> {
         let mut out_types = Vec::new();
         let (in_regs, out_regs, imm) = registers.0;
         assert!(imm.is_none(), "Pseudo functions should not use imms");
-        for _ in in_regs {
-            in_types.push(Type::get::<u64>(&ctx));
+        for reg in in_regs {
+            in_types.push(self.get_llvm_type(reg, &ctx));
         }
-        for _ in out_regs {
-            out_types.push(Type::get::<u64>(&ctx));
+        for reg in out_regs {
+            out_types.push(self.get_llvm_type(reg, &ctx));
         }
 
         let (in_flags, out_flags) = registers.1;
@@ -492,6 +510,7 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         }
     }
 
+    println!("{:?}", module);
     unsafe {
         use std::ffi::CString;
 
@@ -499,5 +518,5 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         write_file(state.module.as_ptr(), filename.as_ptr(),
                    known_insts.as_slice().as_ptr(), known_insts.len());
     }
-    //println!("{:?}", module);
+    println!("{:?}", module);
 }

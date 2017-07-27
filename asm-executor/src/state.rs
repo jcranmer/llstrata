@@ -237,7 +237,6 @@ impl RegState {
 
         let flags = FLAG_CHECK.lock().unwrap();
         for flag in (*flags).iter() {
-            println!("{}", flag);
             if self.get_flag(&flag).unwrap() != other.get_flag(&flag).unwrap() {
                 diffs.push(flag.clone());
             }

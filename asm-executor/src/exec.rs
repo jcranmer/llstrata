@@ -163,7 +163,8 @@ impl PseudoReg {
                 state.set_register_bytes(name, val)
             },
             PseudoReg::Flag(ref name) => {
-                state.set_flag(name, val[0] == 1)
+                // LLVM seems to not 0 upper bits of i1.
+                state.set_flag(name, val[0] & 1 == 1)
             }
         }
     }
@@ -279,12 +280,17 @@ fn link_ir(path: &str,
 
     // Build the in and output register map.
     let abi_in = vec![("rdi", 8), ("rsi", 8), ("rdx", 8), ("rcx", 8),
-        ("r8", 8), ("r9", 8)];
+        ("r8", 8), ("r9", 8),
+        ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32),
+        ("ymm4", 32), ("ymm5", 32), ("ymm6", 32), ("ymm7", 32)];
     let abi_out = vec![("rax", 8), ("rdx", 8), ("rcx", 8),
         ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32)];
 
     fn map_registers(from_regs: &'static str,
                      reg_parms: &[(&'static str, u8)]) -> RegMap {
+        if from_regs.is_empty() {
+            return RegMap { regs: Vec::new() };
+        }
         let reg_list = from_regs.split(" ");
         let mut parm_iter = reg_parms.iter();
         let regs : Vec<_> = reg_list.map(|reg| {
@@ -293,12 +299,17 @@ fn link_ir(path: &str,
             } else {
                 PseudoReg::Flag(reg)
             };
+            // XXX: don't hardcode this.
+            let size = if reg.starts_with("ymm") { 32 } else { 8 };
             while let Some(&(parm_name, parm_size)) = parm_iter.next() {
-                if parm_size != 8 {
-                    continue; // XXX: check against size
+                // Only accept the size if it's legal.
+                assert!(size >= parm_size, "Should order gp before ymm");
+                if parm_size != size {
+                    continue;
                 }
                 return (psuedo, PseudoReg::Register(parm_name));
             }
+            panic!("Can't find a mapping for {} in {}", reg, from_regs);
             return (psuedo, PseudoReg::Register(""));
         }).collect();
 

@@ -1,4 +1,5 @@
 use llvm::*;
+use llvm_sys::core::*;
 use llvmmc::TargetTriple;
 use mcsema::TranslationState;
 use state::InstructionInfo;
@@ -43,6 +44,24 @@ fn get_intrinsic<T>(name: &str) ->
             module.get_function(name).unwrap()
         }
     }
+}
+
+fn cast_to_xmm<'a>(ctx: &'a Context, builder: &'a Builder,
+                   value: &'a Value) -> &'a Value {
+    let ymm_ty = Type::get::<[u64; 4]>(ctx);
+    return builder.build_shuffle_vector(
+        builder.build_bit_cast(value, ymm_ty),
+        Value::new_undef(ymm_ty),
+        &[0, 1]);
+}
+
+fn cast_to_ymm<'a>(ctx: &'a Context, builder: &'a Builder,
+                   value: &'a Value) -> &'a Value {
+    let xmm_ty = Type::get::<[u64; 2]>(ctx);
+    return builder.build_shuffle_vector(
+        builder.build_bit_cast(value, xmm_ty),
+        Value::new_vector(&[0u64.compile(ctx); 2]),
+        &[0, 1, 2, 3]);
 }
 
 fn pf<'a>(builder: &'a Builder, value: &'a Value) -> &'a Value {
@@ -430,6 +449,14 @@ fn shrq_r64_cl(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn vzeroall(func: &Function, builder: &Builder) {
+    builder.position_at_end(func.append("entry"));
+    let ret = unsafe {
+        LLVMConstNull(func.get_signature().get_return().into()).into()
+    };
+    builder.build_ret(ret);
+}
+
 fn xorq_r64_r64(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
@@ -505,6 +532,10 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
     base_instruction!(shrq_r64_cl, "shrq %cl, %rbx",
                       in(cl, rbx, cf, pf, zf, sf, of),
                       out(rcx, cf, pf, zf, sf));
+    base_instruction!(vzeroall, "vzeroall",
+                      in(),
+                      out(ymm0, ymm1, ymm2, ymm3, ymm4, ymm5, ymm6, ymm7,
+                          ymm8, ymm9, ymm10, ymm11, ymm12, ymm13, ymm14, ymm15));
     base_instruction!(xorq_r64_r64, "xorq %rcx, %rbx",
                       in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
     return map;
@@ -515,7 +546,7 @@ pub struct FunctionInfo {
     pub assembly: &'static str,
     pub def_in: Vec<&'static str>,
     pub live_out: Vec<&'static str>,
-    llvm_func: Box<Fn(&Function, &Builder)>
+    pub llvm_func: Box<Fn(&Function, &Builder)>
 }
 
 fn read_eflag_to_register<'a>(func: &'a Function, builder: &Builder) {
@@ -572,6 +603,9 @@ where S: for <'a> Compile<'a> {
     let small_hi = &*func[1];
     let shifted = builder.build_shl(
         small_hi, ((mem::size_of::<S>() * 8) as u64).compile(ctx));
+    let small_lo = builder.build_zext(
+        builder.build_trunc(small_lo, Type::get::<S>(ctx)),
+        Type::get::<u64>(ctx));
     let val = builder.build_or(shifted, small_lo);
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, val, 0);
@@ -601,10 +635,15 @@ where S: for <'a> Compile<'a> {
 fn write_reg_byte(func: &Function, builder: &Builder, byte: u64) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
-    let val = &*func[0];
-    let result = builder.build_or(
-        builder.build_shl(val, (byte * 8).compile(ctx)),
-        &*func[1]);
+    let val = builder.build_zext(
+        builder.build_trunc(
+            &*func[0], Type::get::<u8>(ctx)),
+            Type::get::<u64>(ctx));
+    let cleared_val = builder.build_and(&*func[1],
+        builder.build_not(
+            builder.build_shl(0xffu64.compile(ctx), (byte * 8).compile(ctx))));
+    let result = builder.build_or(cleared_val,
+        builder.build_shl(val, (byte * 8).compile(ctx)));
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, result, 0);
     builder.build_ret(ret);
@@ -622,6 +661,33 @@ fn read_reg_byte(func: &Function, builder: &Builder, byte: u64) {
     builder.build_ret(ret);
 }
 
+fn move_into_xmm(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let lo = &*func[0];
+    let hi = &*func[1];
+    let vec_ty = Type::get::<[u64; 2]>(ctx);
+    let mut vec = Value::new_undef(vec_ty);
+    vec = builder.build_insert_element(vec, lo, 0u32.compile(ctx));
+    vec = builder.build_insert_element(vec, hi, 1u32.compile(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret,
+        cast_to_ymm(ctx, builder, vec), 0);
+    builder.build_ret(ret);
+}
+
+fn move_out_of_xmm(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let xmm = cast_to_xmm(ctx, builder, &*func[0]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    for i in 0..2 {
+        ret = builder.build_insert_value(ret,
+            builder.build_extract_element(xmm, i.compile(ctx)), i);
+    }
+    builder.build_ret(ret);
+}
+
 impl FunctionInfo {
     pub fn get_functions() -> HashMap<&'static str, FunctionInfo> {
         let mut functions = HashMap::new();
@@ -630,6 +696,7 @@ macro_rules! suffix {
     (u16) => { "w" };
     (u32) => { "l" };
     (u64) => { "q" };
+    (nil) => { "" };
 }
 macro_rules! shift_width {
     (u8) => { "$0x8" };
@@ -660,6 +727,7 @@ macro_rules! sub_reg {
     ($reg:ident, u16) => { concat!(stringify!($reg), "w") };
     ($reg:ident, u32) => { concat!(stringify!($reg), "d") };
     ($reg:ident, u64) => { concat!(stringify!($reg), "") };
+    ($reg:ident, nil) => { stringify!($reg) };
 }
 macro_rules! instr {
     ($opcode:ident, $size:ident, $arg1:ident, $arg2:ident) => {
@@ -684,6 +752,7 @@ macro_rules! instr {
     (nosuffix $opcode:ident, $size:ident, $arg:ident) => {
         concat!("\n  ", stringify!($opcode), " ", reg_size!($arg, $size));
     };
+    (comment null) => { "\n  #" };
     (comment $comment:expr) => {
         concat!("\n  # ", $comment);
     };
@@ -951,6 +1020,56 @@ macro_rules! move_bytes {
         $(move_bytes!(rbx -> $reg, $index, $x8);)*
     }
 }
+macro_rules! move_xmm {
+    ($gp0:ident $gp1:ident -> $xmm:ident) => {
+        function!(fn concat!("move_064_128_", stringify!($gp0), "_",
+                             stringify!($gp1), "_", stringify!($xmm)),
+                    move_into_xmm
+                    [stringify!($gp0), stringify!($gp1)] ->
+                    (stringify!($xmm)) : ("ymm15") {
+            doc(concat!("moves ", stringify!($gp0), " to the lower 64 bits of ",
+                stringify!($xmm), ", and ", stringify!($gp1), " to the higher\n",
+                "  # 64 bits.")), concat!(
+                    instr!(comment "move lower bits"),
+                    instr!(mov, u64, $gp0, $xmm),
+                    instr!(comment null),
+                    instr!(comment "move the higher bits"),
+                    instr!(mov, u64, $gp1, xmm15),
+                    instr!(punpcklqd, u64, xmm15, $xmm)
+                )
+        });
+    };
+    ($gp0:ident $gp1:ident <- $xmm:ident) => {
+        function!(fn concat!("move_128_064_", stringify!($xmm), "_",
+                             stringify!($gp0), "_", stringify!($gp1)),
+                    move_out_of_xmm
+                    [stringify!($xmm)] -> (stringify!($gp0), stringify!($gp1))
+                    : ("r15", "ymm14", "ymm15") {
+            doc(concat!("moves the lower 64 bits of ", stringify!($xmm),
+                " to ", stringify!($gp0), ", and the higher 64 bits\n  #",
+                " to ", stringify!($gp1), ".")), concat!(
+                    instr!(comment "move lower bits"),
+                    instr!(mov, u64, $xmm, $gp0),
+                    instr!(comment null),
+                    instr!(comment "move the shuffling constant to xmm15"),
+                    instr!(e mov, u64, "$0x0706050403020100", r15),
+                    instr!(mov, u64, r15, xmm14),
+                    instr!(e mov, u64, "$0x0f0e0d0c0b0a0908", r15),
+                    instr!(mov, u64, r15, xmm15),
+                    instr!(punpcklqd, u64, xmm14, xmm15),
+                    instr!(comment null),
+                    instr!(comment concat!("swap low and high 64 bytes of ", stringify!($xmm))),
+                    instr!(pshufb, nil, xmm15, $xmm),
+                    instr!(comment null),
+                    instr!(comment "move higher bits"),
+                    instr!(mov, u64, $xmm, $gp1),
+                    instr!(comment null),
+                    instr!(comment concat!("swap low and high 64 bytes of ", stringify!($xmm))),
+                    instr!(pshufb, nil, xmm15, $xmm)
+                )
+        });
+    }
+}
         read_eflags!("cf", [rbx, rcx], setnae);
         read_eflags!("of", [rbx, rcx], seto);
         read_eflags!("pf", [rbx, rcx], setp);
@@ -974,6 +1093,8 @@ macro_rules! move_bytes {
                    u32, u64, "32", "64");
         move_bytes!(gp r8, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
         move_bytes!(gp r9, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
+        move_xmm!(r8 r9 -> xmm1);
+        move_xmm!(r8 r9 <- xmm2);
         return functions;
     }
 }

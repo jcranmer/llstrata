@@ -54,8 +54,8 @@ macro_rules! register_list {
         $reg!(flag 1         ,  1);
         $reg!(flag "pf"      ,  2);
         $reg!(flag 0         ,  3);
-        $reg!(flag 0         ,  4);
-        $reg!(flag "af"      ,  5);
+        $reg!(flag "af"      ,  4);
+        $reg!(flag 0         ,  5);
         $reg!(flag "zf"      ,  6);
         $reg!(flag "sf"      ,  7);
         $reg!(flag "tf"      ,  8);
