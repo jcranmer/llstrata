@@ -206,6 +206,14 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
                 if name.find("xmm").is_none() {
                     mangle_assembly = mangle_assembly.replace("  #\n", "");
                 }
+            }
+            if name.starts_with("read_") {
+                mangle_assembly = mangle_assembly
+                    .replace("#! must-undef { }\n", "");
+            }
+            let last_retq = contents.rfind("  retq").unwrap();
+            let size = contents.rfind(".size").unwrap();
+            if last_retq < size {
                 let end = mangle_assembly.rfind("  retq").unwrap();
                 mangle_assembly.truncate(end);
             }
@@ -296,6 +304,10 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
                         // Add in/out register parameters.
                         set_attr(fnptr, "in", &in_regs);
                         set_attr(fnptr, "out", &out_regs);
+                        // We need this to generate correct bindings for ymm registers.
+                        set_attr(fnptr, "target-features", "+avx");
+                        // Use regcall calling convention
+                        LLVMSetFunctionCallConv(fnptr, 92);
                     } else if !LLVMGetFirstBasicBlock(fnptr).is_null() {
                         LLVMDeleteFunction(fnptr);
                     }

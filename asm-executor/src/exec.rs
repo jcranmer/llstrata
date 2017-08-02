@@ -279,12 +279,16 @@ fn link_ir(path: &str,
     let out_regs = get_attr(function, "out");
 
     // Build the in and output register map.
-    let abi_in = vec![("rdi", 8), ("rsi", 8), ("rdx", 8), ("rcx", 8),
-        ("r8", 8), ("r9", 8),
+    let abi_in = vec![("rax", 8), ("rcx", 8), ("rdx", 8), ("rdi", 8),
+        ("rsi", 8), ("r8", 8),
         ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32),
         ("ymm4", 32), ("ymm5", 32), ("ymm6", 32), ("ymm7", 32)];
-    let abi_out = vec![("rax", 8), ("rdx", 8), ("rcx", 8),
+    let abi_out = vec![("rax", 8), ("rcx", 8), ("rdx", 8), ("rdi", 8),
+        ("rsi", 8), ("r8", 8),
         ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32)];
+
+    assert!(unsafe { LLVMGetFunctionCallConv(function) } == 92,
+        "Function must be x86_regcall calling convention");
 
     fn map_registers(from_regs: &'static str,
                      reg_parms: &[(&'static str, u8)]) -> RegMap {
@@ -303,7 +307,6 @@ fn link_ir(path: &str,
             let size = if reg.starts_with("ymm") { 32 } else { 8 };
             while let Some(&(parm_name, parm_size)) = parm_iter.next() {
                 // Only accept the size if it's legal.
-                assert!(size >= parm_size, "Should order gp before ymm");
                 if parm_size != size {
                     continue;
                 }

@@ -688,6 +688,44 @@ fn move_out_of_xmm(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn move_into_ymm(func: &Function, builder: &Builder) {
+    builder.position_at_end(func.append("entry"));
+    let lo = &*func[0];
+    let hi = &*func[1];
+    let vec = builder.build_shuffle_vector(lo, hi, &[0, 1, 4, 5]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, vec, 0);
+    builder.build_ret(ret);
+}
+
+fn move_out_of_ymm(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let val = &*func[0];
+    let spare = [0u64, 0u64, 0u64, 0u64].compile(ctx);
+    let lo = builder.build_shuffle_vector(val, spare, &[0, 1, 4, 5]);
+    let hi = builder.build_shuffle_vector(val, spare, &[2, 3, 4, 5]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret, lo, 0);
+    ret = builder.build_insert_value(ret, hi, 1);
+    builder.build_ret(ret);
+}
+
+fn get_dwords(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let val = builder.build_bit_cast(&*func[0],
+        Type::get::<[u32; 8]>(ctx));
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    for i in 0..4 {
+        let as_64 = builder.build_zext(
+            builder.build_extract_element(val, i.compile(ctx)),
+            Type::get::<u64>(ctx));
+        ret = builder.build_insert_value(ret, as_64, i);
+    }
+    builder.build_ret(ret);
+}
+
 impl FunctionInfo {
     pub fn get_functions() -> HashMap<&'static str, FunctionInfo> {
         let mut functions = HashMap::new();
@@ -697,6 +735,7 @@ macro_rules! suffix {
     (u32) => { "l" };
     (u64) => { "q" };
     (nil) => { "" };
+    (xmm) => { "" };
 }
 macro_rules! shift_width {
     (u8) => { "$0x8" };
@@ -711,6 +750,9 @@ macro_rules! reg_size {
     ($reg:ident, $ty:ident) => { concat!("%", sub_reg!($reg, $ty)) };
 }
 macro_rules! sub_reg {
+    (xmm1, $t:ident) => { "xmm1" };
+    (xmm2, $t:ident) => { "xmm2" };
+    (xmm3, $t:ident) => { "xmm3" };
     (rax, u8) => { "al" };
     (rbx, u8) => { "bl" };
     (rcx, u8) => { "cl" };
@@ -728,6 +770,10 @@ macro_rules! sub_reg {
     ($reg:ident, u32) => { concat!(stringify!($reg), "d") };
     ($reg:ident, u64) => { concat!(stringify!($reg), "") };
     ($reg:ident, nil) => { stringify!($reg) };
+    (ymm1, xmm) => { "xmm1" };
+    (ymm2, xmm) => { "xmm2" };
+    (ymm3, xmm) => { "xmm3" };
+    ($reg:ident, xmm) => { stringify!($reg) };
 }
 macro_rules! instr {
     ($opcode:ident, $size:ident, $arg1:ident, $arg2:ident) => {
@@ -751,6 +797,14 @@ macro_rules! instr {
     };
     (nosuffix $opcode:ident, $size:ident, $arg:ident) => {
         concat!("\n  ", stringify!($opcode), " ", reg_size!($arg, $size));
+    };
+    (nosuffix $opcode:ident, $size:ident, $arg1:ident, $arg2:ident) => {
+        concat!("\n  ", stringify!($opcode), " ", reg_size!($arg1, $size),
+            ", ", reg_size!($arg2, $size));
+    };
+    (nosize $opcode:ident, $arg1:expr, $($arg:ident),*) => {
+        concat!("\n  ", stringify!($opcode), " ", $arg1,
+            $(", %", stringify!($arg)),*);
     };
     (comment null) => { "\n  #" };
     (comment $comment:expr) => {
@@ -799,7 +853,7 @@ macro_rules! function {
   .type ", $strname, ", @function\n",
   make_string!("maybe-read", vals($($in_reg),*)),
   make_string!("maybe-write", vals($($out_reg),*)),
-  make_string!(opt "must-undef", vals($($undef_reg),*)),
+  make_string!("must-undef", vals($($undef_reg),*)),
 ".", $strname, ":
   # ----------------------------------------------------------------------------
   # ", $doc, "
@@ -926,6 +980,43 @@ macro_rules! set_szp {
     }
 }
 macro_rules! move_small_large {
+    ($rs1:ident, $rs2:ident, $rl:ident, u32, u64, $ss:expr, $ls:expr) => {
+        function!(fn concat!("move_0", $ss, "_0", $ls, "_",
+                             sub_reg!($rs1, u32), "_",
+                             sub_reg!($rs2, u32), "_",
+                             sub_reg!($rl, u64)),
+                    move_small_to_large<u32>
+                    [sub_reg!($rs1, u32), sub_reg!($rs2, u32)] ->
+                    (sub_reg!($rl, u64)) : ("r14", "r15") {
+            doc(concat!("moves ", sub_reg!($rs1, u32), " and ",
+                sub_reg!($rs2, u32), " to ", sub_reg!($rl, u64), ".")),
+                concat!(
+                    instr!(pushfq),
+                    instr!(mov, u32, $rs2, r15),
+                    instr!(e shl, u64, shift_width!(u32), r15),
+                    instr!(mov, u32, $rs1, r14),
+                    instr!(or, u64, r14, r15),
+                    instr!(mov, u64, r15, $rl),
+                    instr!(popfq))
+        });
+        function!(fn concat!("move_0", $ls, "_0", $ss, "_",
+                             sub_reg!($rl, u64), "_",
+                             sub_reg!($rs1, u32), "_",
+                             sub_reg!($rs2, u32)),
+                    move_large_to_small<u32>
+                    [sub_reg!($rl, u64)] ->
+                    (sub_reg!($rs1, u32), sub_reg!($rs2, u32)) : ("r15") {
+            doc(concat!("moves ", sub_reg!($rl, u64), " to ",
+                sub_reg!($rs1, u32), " and ", sub_reg!($rs2, u32), ".")),
+                concat!(
+                    instr!(pushfq),
+                    instr!(mov, u64, $rl, r15),
+                    instr!(mov, u32, r15, $rs1),
+                    instr!(e shr, u64, shift_width!(u32), r15),
+                    instr!(mov, u32, r15, $rs2),
+                    instr!(popfq))
+        });
+    };
     ($rs1:ident, $rs2:ident, $rl:ident, $size:ident,
      $lsize:ident, $ss:expr, $ls:expr) => {
         function!(fn concat!("move_0", $ss, "_0", $ls, "_",
@@ -1021,6 +1112,16 @@ macro_rules! move_bytes {
     }
 }
 macro_rules! move_xmm {
+    ($regs:tt <> [$($xmm:ident),*]) => {
+        $(move_xmm!($regs <> $xmm);)*
+    };
+    ([$($gp0:ident $gp1:ident),*] <> $xmm:ident) => {
+        $(move_xmm!($gp0 $gp1 <- $xmm);
+        move_xmm!($gp0 $gp1 -> $xmm);)*
+    };
+    ([$($gp0:ident $gp1:ident $gp2:ident $gp3:ident),*] <> $xmm:ident) => {
+        $(move_xmm!($gp0 $gp1 $gp2 $gp3 <- $xmm);)*
+    };
     ($gp0:ident $gp1:ident -> $xmm:ident) => {
         function!(fn concat!("move_064_128_", stringify!($gp0), "_",
                              stringify!($gp1), "_", stringify!($xmm)),
@@ -1068,7 +1169,81 @@ macro_rules! move_xmm {
                     instr!(pshufb, nil, xmm15, $xmm)
                 )
         });
-    }
+    };
+    ($gp0:ident $gp1:ident $gp2:ident $gp3:ident <- $xmm:ident) => {
+        function!(fn concat!("move_128_032_", stringify!($xmm), "_",
+                             sub_reg!($gp0, u32), "_", sub_reg!($gp1, u32), "_",
+                             sub_reg!($gp2, u32), "_", sub_reg!($gp3, u32)),
+                    get_dwords
+                    [stringify!($xmm)] -> (sub_reg!($gp0, u32), sub_reg!($gp1, u32),
+                    sub_reg!($gp2, u32), sub_reg!($gp3, u32))
+                    : () {
+            doc(concat!("moves the lowest 32 bits of ", stringify!($xmm),
+                " to ", sub_reg!($gp0, u32), ", and so on.")), concat!(
+                    instr!(nosuffix movd, u32, $xmm, $gp0),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosuffix movd, u32, $xmm, $gp1),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosuffix movd, u32, $xmm, $gp2),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosuffix movd, u32, $xmm, $gp3),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm)
+                )
+        });
+    };
+}
+macro_rules! move_ymm {
+    ($regs:tt <> [$($ymm:ident),*]) => {
+        $(move_ymm!($regs <> $ymm);)*
+    };
+    ([$($xmm0:ident $xmm1:ident),*] <> $ymm:ident) => {
+        $(move_ymm!($xmm0 $xmm1 <- $ymm);
+        move_ymm!($xmm0 $xmm1 -> $ymm);)*
+    };
+    ($xmm0:ident $xmm1:ident -> $ymm:ident) => {
+        function!(fn concat!("move_128_256_", stringify!($xmm0), "_",
+                             stringify!($xmm1), "_", stringify!($ymm)),
+                    move_into_ymm
+                    [stringify!($xmm0), stringify!($xmm1)] ->
+                    (stringify!($ymm)) : ("ymm15") {
+            doc(concat!("moves ", stringify!($xmm0), " to the lower 128 bits",
+                " of ", stringify!($ymm), ", and ", stringify!($xmm1), " to",
+                " the higher\n", "  # 128 bits of ", stringify!($ymm), ".")),
+                concat!(
+                    instr!(comment "move higher bits"),
+                    instr!(movupd, xmm, $xmm1, $ymm),
+                    instr!(comment null),
+                    instr!(comment concat!("swap low and high bits in ", stringify!($ymm))),
+                    instr!(nosize vperm2f128, "$0x1", $ymm, $ymm, ymm15),
+                    instr!(vmovupd, nil, ymm15, $ymm),
+                    instr!(comment null),
+                    instr!(comment "move lower bits"),
+                    instr!(movupd, xmm, $xmm0, $ymm)
+                )
+        });
+    };
+    ($xmm0:ident $xmm1:ident <- $ymm:ident) => {
+        function!(fn concat!("move_256_128_", stringify!($ymm), "_",
+                             stringify!($xmm0), "_", stringify!($xmm1)),
+                    move_out_of_ymm
+                    [stringify!($ymm)] ->
+                    (stringify!($xmm0), stringify!($xmm1)) : ("ymm15") {
+            doc(concat!("moves the lower 128 bits of ", stringify!($ymm), " to ",
+                stringify!($xmm0), ", and the higher 128 bits\n  # to ",
+                stringify!($xmm1), ".")),
+                concat!(
+                    instr!(comment "move lower bits"),
+                    instr!(movupd, xmm, $ymm, $xmm0),
+                    instr!(comment null),
+                    instr!(comment concat!("mov low and high 128 bytes of ",
+                        stringify!($ymm), " to ymm15, and swap them")),
+                    instr!(nosize vperm2f128, "$0x1", $ymm, $ymm, ymm15),
+                    instr!(comment null),
+                    instr!(comment "move higher bits"),
+                    instr!(movupd, xmm, xmm15, $xmm1)
+                )
+        });
+    };
 }
         read_eflags!("cf", [rbx, rcx], setnae);
         read_eflags!("of", [rbx, rcx], seto);
@@ -1093,8 +1268,9 @@ macro_rules! move_xmm {
                    u32, u64, "32", "64");
         move_bytes!(gp r8, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
         move_bytes!(gp r9, [2="0x10",3="0x18",4="0x20",5="0x28",6="0x30",7="0x38"]);
-        move_xmm!(r8 r9 -> xmm1);
-        move_xmm!(r8 r9 <- xmm2);
+        move_xmm!([r8 r9, r10 r11, r12 r13] <> [xmm1, xmm2, xmm3]);
+        move_xmm!([rax rdx r8 r9, r10 r11 r12 r13] <> [xmm1, xmm2, xmm3]);
+        move_ymm!([xmm8 xmm9, xmm10 xmm11, xmm12 xmm13] <> [ymm1, ymm2, ymm3]);
         return functions;
     }
 }
