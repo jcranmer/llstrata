@@ -726,6 +726,59 @@ fn get_dwords(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+fn combine_xmm(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let lo = &*func[0];
+    let hi = &*func[1];
+    let vec = builder.build_shuffle_vector(lo, hi, &[0, 4]);
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(ret,
+        cast_to_ymm(ctx, builder, vec), 0);
+    builder.build_ret(ret);
+}
+
+fn combine_xmm_u32(func: &Function, builder: &Builder) {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let i32x8 = Type::get::<[u32; 8]>(ctx);
+    let mut vec = [0u32; 8].compile(ctx);
+    for i in 0..4 {
+        let mut shuffle = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        shuffle[i] = 8;
+        vec = builder.build_shuffle_vector(
+            vec, builder.build_bit_cast(&*func[i], i32x8),
+            shuffle.as_slice());
+    }
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    ret = builder.build_insert_value(
+        ret, builder.build_bit_cast(vec, Type::get::<[u64; 4]>(ctx)), 0);
+    builder.build_ret(ret);
+}
+
+fn split_xmm<T>(func: &Function, builder: &Builder)
+        where T: for <'a> Compile<'a> + From<u8> {
+    let ctx = func.get_context();
+    builder.position_at_end(func.append("entry"));
+    let xmm = cast_to_xmm(ctx, builder, &*func[0]);
+    let vec_size = 16 / mem::size_of::<T>();
+    let mut values = Vec::with_capacity(vec_size);
+    values.resize(vec_size, T::from(0).compile(ctx));
+    let zeroes = Value::new_vector(&values);
+    let as_u32 = builder.build_bit_cast(xmm, zeroes.get_type());
+    let mut ret = Value::new_undef(func.get_signature().get_return());
+    let mut vec_slice : Vec<u32> = Vec::with_capacity(vec_size * 2);
+    vec_slice.resize(vec_size * 2, vec_size as u32);
+    for i in 0..vec_size {
+        vec_slice[0] = i as u32;
+        ret = builder.build_insert_value(ret,
+            builder.build_bit_cast(
+                builder.build_shuffle_vector(as_u32, zeroes, vec_slice.as_slice()),
+                Type::get::<[u64; 4]>(ctx)), i);
+    }
+    builder.build_ret(ret);
+}
+
 impl FunctionInfo {
     pub fn get_functions() -> HashMap<&'static str, FunctionInfo> {
         let mut functions = HashMap::new();
@@ -753,6 +806,8 @@ macro_rules! sub_reg {
     (xmm1, $t:ident) => { "xmm1" };
     (xmm2, $t:ident) => { "xmm2" };
     (xmm3, $t:ident) => { "xmm3" };
+    (xmm8, $t:ident) => { "xmm8" };
+    (xmm9, $t:ident) => { "xmm9" };
     (rax, u8) => { "al" };
     (rbx, u8) => { "bl" };
     (rcx, u8) => { "cl" };
@@ -1192,6 +1247,113 @@ macro_rules! move_xmm {
         });
     };
 }
+macro_rules! split_xmm {
+    ($regs:tt <> [$($xmm:ident),*]) => {
+        $(split_xmm!($regs <> $xmm);)*
+    };
+    ([$($gp0:ident $gp1:ident),*] <> $xmm:ident) => {
+        $(split_xmm!($gp0 $gp1 <- $xmm);
+        split_xmm!($gp0 $gp1 -> $xmm);)*
+    };
+    ([$($gp0:ident $gp1:ident $gp2:ident $gp3:ident),*] <> $xmm:ident) => {
+        $(split_xmm!($gp0 $gp1 $gp2 $gp3 <- $xmm);
+        split_xmm!($gp0 $gp1 $gp2 $gp3 -> $xmm);)*
+    };
+    ($gp0:ident $gp1:ident -> $xmm:ident) => {
+        function!(fn concat!("move_64_128_", stringify!($gp0), "_",
+                             stringify!($gp1), "_", stringify!($xmm)),
+                    combine_xmm
+                    [stringify!($gp0), stringify!($gp1)] ->
+                    (stringify!($xmm)) : ("ymm15") {
+            doc(concat!("moves the lower 64 bits of ", stringify!($gp1), " to ",
+                "the higher 64 bits of ", stringify!($xmm), ",\n  # and the ",
+                "lower 64 bits of ", stringify!($gp0), " to the lower 64 bits ",
+                "of ", stringify!($xmm))), concat!(
+                    instr!(comment "move low bits"),
+                    instr!(movsd, nil, $gp0, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(comment null),
+                    instr!(comment "move high bits"),
+                    instr!(movsd, nil, $gp1, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                )
+        });
+    };
+    ($gp0:ident $gp1:ident <- $xmm:ident) => {
+        function!(fn concat!("move_128_64_", stringify!($xmm), "_",
+                             stringify!($gp0), "_", stringify!($gp1)),
+                    split_xmm<u64>
+                    [stringify!($xmm)] -> (stringify!($gp0), stringify!($gp1))
+                    : ("ymm15") {
+            doc(concat!("moves the upper 64 bits of ", stringify!($xmm),
+                " to ", stringify!($gp1), ", and the lower 64 bits\n  #",
+                " to ", stringify!($gp0), ".")), concat!(
+                    instr!(comment "move low bits"),
+                    instr!(xorpd, nil, $gp0, $gp0),
+                    instr!(movsd, nil, $xmm, $gp0),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(comment null),
+                    instr!(comment "move high bits"),
+                    instr!(xorpd, nil, $gp1, $gp1),
+                    instr!(movsd, nil, $xmm, $gp1),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                )
+        });
+    };
+    ($gp0:ident $gp1:ident $gp2:ident $gp3:ident <- $xmm:ident) => {
+        function!(fn concat!("move_128_032_", stringify!($xmm), "_",
+                             stringify!($gp0), "_", stringify!($gp1), "_",
+                             stringify!($gp2), "_", stringify!($gp3)),
+                    split_xmm<u32>
+                    [stringify!($xmm)] -> (stringify!($gp0), stringify!($gp1),
+                    stringify!($gp2), stringify!($gp3))
+                    : () {
+            doc(concat!("moves the lowest 32 bits of ", stringify!($xmm),
+                " to ", stringify!($gp0), ", the next 32 bits to\n  # ",
+                stringify!($gp1), ", the next to ", stringify!($gp2), " and the",
+                " highest 32 bits to ", stringify!($gp3), ".")), concat!(
+                    instr!(xorpd, nil, $gp0, $gp0),
+                    instr!(xorpd, nil, $gp1, $gp1),
+                    instr!(xorpd, nil, $gp2, $gp2),
+                    instr!(xorpd, nil, $gp3, $gp3),
+                    instr!(movss, nil, $xmm, $gp0),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(movss, nil, $xmm, $gp1),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(movss, nil, $xmm, $gp2),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(movss, nil, $xmm, $gp3),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                )
+        });
+    };
+    ($gp0:ident $gp1:ident $gp2:ident $gp3:ident -> $xmm:ident) => {
+        function!(fn concat!("move_032_128_", stringify!($gp0), "_",
+                             stringify!($gp1), "_", stringify!($gp2), "_",
+                             stringify!($gp3), "_", stringify!($xmm)),
+                    combine_xmm_u32
+                    [stringify!($gp0), stringify!($gp1), stringify!($gp2),
+                    stringify!($gp3)] -> (stringify!($xmm)) : () {
+            doc(concat!("moves the lowest 32 bits of ", stringify!($xmm),
+                " to ", stringify!($gp0), ", the next 32 bits to\n  # ",
+                stringify!($gp1), ", the next to ", stringify!($gp2), " and the",
+                " highest 32 bits to ", stringify!($gp3), ".")), concat!(
+                    instr!(movss, nil, $gp0, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(movss, nil, $gp1, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(movss, nil, $gp2, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                    instr!(movss, nil, $gp3, $xmm),
+                    instr!(nosize shufps, "$0x39", $xmm, $xmm),
+                )
+        });
+    };
+}
 macro_rules! move_ymm {
     ($regs:tt <> [$($ymm:ident),*]) => {
         $(move_ymm!($regs <> $ymm);)*
@@ -1271,6 +1433,8 @@ macro_rules! move_ymm {
         move_xmm!([r8 r9, r10 r11, r12 r13] <> [xmm1, xmm2, xmm3]);
         move_xmm!([rax rdx r8 r9, r10 r11 r12 r13] <> [xmm1, xmm2, xmm3]);
         move_ymm!([xmm8 xmm9, xmm10 xmm11, xmm12 xmm13] <> [ymm1, ymm2, ymm3]);
+        split_xmm!([xmm8 xmm9, xmm10 xmm11, xmm12 xmm13] <> [xmm1, xmm2, xmm3]);
+        split_xmm!([xmm4 xmm5 xmm6 xmm7, xmm8 xmm9 xmm10 xmm11] <> [xmm1, xmm2, xmm3]);
         return functions;
     }
 }
