@@ -112,7 +112,7 @@ pub enum InstructionState {
     Unsolved
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct InstructionInfo {
     pub opcode: String,
     pub def_in: String,

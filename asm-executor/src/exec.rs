@@ -280,12 +280,17 @@ fn link_ir(path: &str,
 
     // Build the in and output register map.
     let abi_in = vec![("rax", 8), ("rcx", 8), ("rdx", 8), ("rdi", 8),
-        ("rsi", 8), ("r8", 8),
+        ("rsi", 8), ("r8", 8), ("r9", 8), ("r10", 8),
         ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32),
-        ("ymm4", 32), ("ymm5", 32), ("ymm6", 32), ("ymm7", 32)];
+        ("ymm4", 32), ("ymm5", 32), ("ymm6", 32), ("ymm7", 32),
+        ("ymm8", 32), ("ymm9", 32), ("ymm10", 32), ("ymm11", 32),
+        ("ymm12", 32), ("ymm13", 32), ("ymm14", 32), ("ymm15", 32)];
     let abi_out = vec![("rax", 8), ("rcx", 8), ("rdx", 8), ("rdi", 8),
-        ("rsi", 8), ("r8", 8),
-        ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32)];
+        ("rsi", 8), ("r8", 8), ("r9", 8), ("r10", 8),
+        ("ymm0", 32), ("ymm1", 32), ("ymm2", 32), ("ymm3", 32),
+        ("ymm4", 32), ("ymm5", 32), ("ymm6", 32), ("ymm7", 32),
+        ("ymm8", 32), ("ymm9", 32), ("ymm10", 32), ("ymm11", 32),
+        ("ymm12", 32), ("ymm13", 32), ("ymm14", 32), ("ymm15", 32)];
 
     assert!(unsafe { LLVMGetFunctionCallConv(function) } == 92,
         "Function must be x86_regcall calling convention");

@@ -311,6 +311,16 @@ impl <'a> TranslationState<'a> {
         return self.module.add_function(name, fn_ty);
     }
 
+    pub fn get_llvm_instruction(&'a self,
+                                inst: &InstructionInfo) -> Instruction<'a> {
+        let tt = self.state.get_target_triple();
+        let base = parse_asm_file(tt, &inst.get_inst_file(self.state));
+        assert!(base.len() == 2,
+            "We expect the instruction file to have few instructions");
+        assert!(base[base.len() - 1].opcode.is_return());
+        return base.into_iter().next().unwrap();
+    }
+
     fn get_registers_for_pseudo(&self, pseudo: &FunctionInfo) -> (RegInfo<'a>, FlagInfo) {
         let mut registers : RegInfo<'a> = Default::default();
         let mut flags : FlagInfo = Default::default();

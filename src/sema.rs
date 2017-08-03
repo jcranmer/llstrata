@@ -6,9 +6,9 @@ use state::InstructionInfo;
 use std::collections::HashMap;
 use std::mem;
 
-struct BaseInfo {
-    inst_info: InstructionInfo,
-    sample: &'static str,
+pub struct BaseInfo {
+    pub inst_info: InstructionInfo,
+    pub sample: &'static str,
     build_llvm: Box<Fn(&Function, &Builder)>
 }
 
@@ -115,7 +115,7 @@ fn adcb_r8_r8(func: &Function, builder: &Builder) {
     let shalf = builder.build_call(soverflow, &[lhs, rhs]);
     let sfull = builder.build_call(soverflow,
         &[builder.build_extract_value(shalf, 0), in_cf]);
-    let of = builder.build_or(
+    let of = builder.build_xor(
         builder.build_extract_value(sfull, 1),
         builder.build_extract_value(shalf, 1));
 
@@ -151,7 +151,7 @@ fn adcw_r16_r16(func: &Function, builder: &Builder) {
     let shalf = builder.build_call(soverflow, &[lhs, rhs]);
     let sfull = builder.build_call(soverflow,
         &[builder.build_extract_value(shalf, 0), in_cf]);
-    let of = builder.build_or(
+    let of = builder.build_xor(
         builder.build_extract_value(sfull, 1),
         builder.build_extract_value(shalf, 1));
 
@@ -187,7 +187,7 @@ fn adcl_r32_r32(func: &Function, builder: &Builder) {
     let shalf = builder.build_call(soverflow, &[lhs, rhs]);
     let sfull = builder.build_call(soverflow,
         &[builder.build_extract_value(shalf, 0), in_cf]);
-    let of = builder.build_or(
+    let of = builder.build_xor(
         builder.build_extract_value(sfull, 1),
         builder.build_extract_value(shalf, 1));
 
@@ -221,7 +221,7 @@ fn adcq_r64_r64(func: &Function, builder: &Builder) {
     let shalf = builder.build_call(soverflow, &[lhs, rhs]);
     let sfull = builder.build_call(soverflow,
         &[builder.build_extract_value(shalf, 0), in_cf]);
-    let of = builder.build_or(
+    let of = builder.build_xor(
         builder.build_extract_value(sfull, 1),
         builder.build_extract_value(shalf, 1));
 
@@ -336,7 +336,7 @@ fn salq_r64_cl(func: &Function, builder: &Builder) {
 
     // We only set flags if the shift width is not 0.
     let set_flags = builder.build_cmp(shift_width, get_constant(shift_width, 0),
-        Predicate::Equal);
+        Predicate::NotEqual);
     // Carry flag is the last bit shifted out.
     // val = bin(abcd)
     // val << 0 = abcd, cf = <unchanged>
@@ -390,7 +390,7 @@ fn sarq_r64_cl(func: &Function, builder: &Builder) {
 
     // We only set flags if the shift width is not 0.
     let set_flags = builder.build_cmp(shift_width, get_constant(shift_width, 0),
-        Predicate::Equal);
+        Predicate::NotEqual);
     // Carry flag is the last bit shifted out.
     // val = bin(abcd)
     // val >> 0 = abcd, cf = <unchanged>
@@ -435,7 +435,7 @@ fn shrq_r64_cl(func: &Function, builder: &Builder) {
 
     // We only set flags if the shift width is not 0.
     let set_flags = builder.build_cmp(shift_width, get_constant(shift_width, 0),
-        Predicate::Equal);
+        Predicate::NotEqual);
     let pf = builder.build_select(set_flags, pf(builder, res), in_pf);
     let zf = builder.build_select(set_flags, zf(builder, res), in_zf);
     let sf = builder.build_select(set_flags, sf(builder, res), in_sf);
@@ -477,7 +477,7 @@ macro_rules! strata_str {
     ($($val:expr),*) => { concat!("{", $(" %", $val,)* " }") }
 }
 
-fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
+pub fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
     let mut map = HashMap::new();
     macro_rules! base_instruction {
         ($opcode:ident, $prog:expr,
@@ -520,24 +520,24 @@ fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
     base_instruction!(movswq_r64_r16, "movswq %cx, %rbx",
                       in(cx), out(rbx));
     base_instruction!(orq_r64_r64, "orq %rcx, %rbx",
-                      in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
+                      in(rcx, rbx), out(rbx, cf, pf, zf, sf, of));
     base_instruction!(popcntq_r64_r64, "popcntq %rcx, %rbx",
-                      in(rcx), out(rcx, cf, pf, zf, sf, of));
+                      in(rcx), out(rbx, cf, pf, zf, sf, of));
     base_instruction!(salq_r64_cl, "salq %cl, %rbx",
                       in(cl, rbx, cf, pf, zf, sf, of),
-                      out(rcx, pf, zf, sf));
+                      out(rbx, pf, zf, sf));
     base_instruction!(sarq_r64_cl, "sarq %cl, %rbx",
                       in(cl, rbx, cf, pf, zf, sf, of),
-                      out(rcx, cf, pf, zf, sf));
+                      out(rbx, cf, pf, zf, sf));
     base_instruction!(shrq_r64_cl, "shrq %cl, %rbx",
                       in(cl, rbx, cf, pf, zf, sf, of),
-                      out(rcx, cf, pf, zf, sf));
-    base_instruction!(vzeroall, "vzeroall",
+                      out(rbx, pf, zf, sf));
+    base_instruction!(vzeroall, "vzeroall ",
                       in(),
                       out(ymm0, ymm1, ymm2, ymm3, ymm4, ymm5, ymm6, ymm7,
                           ymm8, ymm9, ymm10, ymm11, ymm12, ymm13, ymm14, ymm15));
     base_instruction!(xorq_r64_r64, "xorq %rcx, %rbx",
-                      in(rcx, rbx), out(rcx, cf, pf, zf, sf, of));
+                      in(rcx, rbx), out(rbx, cf, pf, zf, sf, of));
     return map;
 }
 

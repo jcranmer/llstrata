@@ -166,28 +166,236 @@ fn generate(state: &state::State, output: &Path) {
     mcsema::write_translations(&translation_state, output);
 }
 
-fn check_base(state: &mut state::State) -> io::Result<()> {
-    let funcs = sema::FunctionInfo::get_functions();
-    let mut unseen : HashSet<&'static str> = funcs.keys().map(|k| *k).collect();
-    let function_dir = state.get_workdir().join("functions");
+fn assemble_code(s_file: &Path, o_file: &Path) -> io::Result<bool> {
+    let status = process::Command::new("clang")
+        .arg("-c").arg(s_file)
+        .arg("-o").arg(o_file)
+        .status()?;
+    return Ok(status.success());
+}
+
+fn assemble_llvm(ll_file: &Path, module: &llvm::Module, name: &str,
+                 in_regs: &str, out_regs: &str) -> io::Result<()> {
+    // Clone the module to get just the function of interest. This is more
+    // annoying than it should be, because it's not quite so easy to pass
+    // the necessary information to the asm-executor.
+    let clone = module.clone();
+
+    // Delete all the other functions in the module. Go into unsafe mode to do
+    // this, because the llvm crate doesn't expose this functionality (yuck).
+    // While we do this, we're going to clean up the function with some more
+    // data for the asm-executor:
+    // * set the calling convention to x86_regcallcc (more things get passed in
+    //   registers)
+    // * add in/out attributes indicating the register mappings.
+    // * set the target-features to include AVX support (to make sure we use
+    //   the YMM registers instead of XMM).
+    unsafe {
+        use llvm_sys::core::*;
+        use llvm_sys::prelude::*;
+        // Arrggrgrabh... we're pinned to a bad revision of llvm_sys, so we
+        // need to define these functions ourselves. Hurry up and fix your
+        // replacement crate!
+        enum LLVMOpaqueAttributeRef {};
+        type LLVMAttributeRef = *mut LLVMOpaqueAttributeRef;
+        extern "C" {
+            fn LLVMCreateStringAttribute(C: LLVMContextRef,
+                                         K: *const i8,
+                                         KLen: u32,
+                                         V: *const i8,
+                                         VLen: u32) -> LLVMAttributeRef;
+            fn LLVMAddAttributeAtIndex(F: LLVMValueRef,
+                                       Idx: u32, A: LLVMAttributeRef);
+        }
+
+        // Helper for setting attributes.
+        unsafe fn set_attr(func: LLVMValueRef, name: &str, val: &str) {
+            let attr = LLVMCreateStringAttribute(
+                LLVMGetTypeContext(LLVMTypeOf(func)),
+                name.as_ptr() as *const i8,
+                name.len() as u32,
+                val.as_ptr() as *const i8,
+                val.len() as u32);
+            LLVMAddAttributeAtIndex(func, !0, attr);
+        }
+
+        use std::ops::Deref;
+        let module : LLVMModuleRef = clone.deref().into();
+        let mut fnptr = LLVMGetFirstFunction(module);
+        loop {
+            let next = LLVMGetNextFunction(fnptr);
+            let clean_fn : &llvm::Function = fnptr.into();
+            if clean_fn.get_name() == Some(name) {
+                set_attr(fnptr, "in", in_regs);
+                set_attr(fnptr, "out", out_regs);
+                set_attr(fnptr, "target-features", "+avx");
+                LLVMSetFunctionCallConv(fnptr, 92);
+            } else if !LLVMGetFirstBasicBlock(fnptr).is_null() {
+                LLVMDeleteFunction(fnptr);
+            }
+            fnptr = next;
+            if fnptr.is_null() { break; }
+        }
+    }
+
+    let mut output = File::create(&ll_file)?;
+    write!(output, "{:?}", clone)?;
+    output.flush()?;
+    return Ok(());
+}
+
+fn get_reg_string(mri: &llvmmc::RegisterInfo,
+                  registers: &[&str]) -> (String, String) {
+    let regs : (Vec<_>, Vec<_>) = registers.iter()
+        .map(|reg| {
+            let reg_upper = reg.to_uppercase();
+            let llreg = mri.get_register(&reg_upper);
+            if let Some(llreg) = llreg {
+                let top = llreg.get_top_register(mri);
+                if top == llreg {
+                    return (top.name, None);
+                }
+                let offset = top.get_sub_register_slice(llreg, mri)
+                    .expect("Not in top level?");
+                return (top.name, Some(offset));
+            }
+            return (reg, None);
+        }).map(|(reg, off)| (reg.to_lowercase(), off))
+    .map(|(mut reg, off)| {
+        if reg.starts_with("zmm") {
+            unsafe { reg.as_mut_vec()[0] = b'y' }
+        }
+        (reg, off)
+    })
+    .map(|(reg, off)| {
+        if let Some(off) = off {
+            let output = format!("{}:{}", &reg, off.1 / 8);
+            (reg, output)
+        } else {
+            (reg.clone(), reg)
+        }
+    })
+    .unzip();
+    let reg_str = regs.0.join(" ");
+    return (reg_str, regs.1.join(" "));
+}
+
+fn verify_equivalence(s_file: &Path, module: &llvm::Module, name: &str,
+                      state: &state::State, mri: &llvmmc::RegisterInfo,
+                      in_list: &[&str], out_list: &[&str]) -> io::Result<bool> {
+    // Assemble the .s code.
+    let mut o_file = env::temp_dir();
+    o_file.push("gold-function.o");
+    if !assemble_code(s_file, &o_file)? {
+        return Ok(false);
+    }
+
+    // Compute the read/write registers for the function.
+    let (in_regs, _) = get_reg_string(mri, &in_list);
+    let (out_regs, out_valid) = get_reg_string(mri, &out_list);
+
+    // Assemble the .ll file.
+    let mut ll_file = env::temp_dir();
+    ll_file.push("test-function.ll");
+    assemble_llvm(&ll_file, module, name, &in_regs, &out_regs)?;
 
     // Get the pasth to the asm-executor binary
     let mut asm_dir = env::current_exe()?;
     asm_dir.pop();
     asm_dir.push("asm-executor");
 
-    let testcase = state.get_workdir().join("testcases.tc");
+    // Run the code!
+    let success = process::Command::new(&asm_dir)
+        .arg(&state.get_workdir().join("testcases.tc"))
+        .arg(&ll_file)
+        .arg(&o_file)
+        .arg(&out_valid)
+        .status()?;
 
+    return Ok(success.success());
+}
+
+fn check_base(state: &mut state::State) -> io::Result<()> {
+    let funcs = sema::FunctionInfo::get_functions();
+    let mut unseen : HashSet<&'static str> = funcs.keys().map(|k| *k).collect();
+    let function_dir = state.get_workdir().join("functions");
+
+    // Add in all the base programs so we get all the LLVM IR.
     let xlation = mcsema::TranslationState::new(state);
     sema::add_base_programs(&xlation.module, &xlation.builder,
                             &xlation, state.get_target_triple());
+    let mri = state.get_target_triple().register_info();
 
+    println!("Checking base instructions...");
+    let mut base_insts = sema::get_base_instructions();
+    for inst in state.get_instructions(state::InstructionState::Base) {
+        let s_path = inst.get_inst_file(state);
+        let base_inst = base_insts.remove(inst.opcode.as_str());
+        if base_inst.is_none() {
+            println!("Missing base instruction {}", inst.opcode);
+            continue;
+        }
+        let base_inst = base_inst.unwrap();
+
+        if base_inst.inst_info != inst {
+            println!("Error in instruction info metadata for {}", inst.opcode);
+            println!("LLStrata: {:?}", base_inst.inst_info);
+            println!("Strata: {:?}", inst);
+        }
+
+        // Read the .s file from strata, compare it to our own string.
+        let mut s_file = File::open(&s_path)?;
+        let mut contents = String::new();
+        s_file.read_to_string(&mut contents)?;
+        let expected = format!(".target:\n  {}  retq\n", base_inst.sample);
+        if contents != expected {
+            println!("Base instruction {} differs from STRATA:", inst.opcode);
+            println!("LLStrata:\n{}", expected);
+            println!("STRATA:\n{}", contents);
+            continue;
+        }
+
+        // Run the test equivalence for the base program
+        fn str_to_list(s: &str) -> Vec<&str> {
+            s[1..s.len() - 1].split_whitespace()
+                .map(|n| &n[1..])
+                .collect()
+        }
+        let in_regs : Vec<_> = str_to_list(&inst.def_in);
+        let out_regs : Vec<_> = str_to_list(&inst.live_out);
+
+        // Since there's no support in asm-executor for immediate parameters,
+        // this produces a spurious false positive.
+        if inst.opcode == "movq_r64_imm64" {
+            continue;
+        }
+
+        // LLVM's codegen seems busted in this case.
+        if inst.opcode == "vzeroall" {
+            continue;
+        }
+
+        // LLVM function name
+        let func = xlation.get_function(&xlation.get_llvm_instruction(&inst));
+        if !verify_equivalence(&s_path, &xlation.module,
+                               func.get_name().unwrap(), state,
+                               mri, &in_regs, &out_regs)? {
+            println!("Base instruction {} failed", inst.opcode);
+            panic!("die here");
+        }
+    }
+
+    if base_insts.len() > 0 {
+        println!("Spurious base instructions: {:?}",
+                 base_insts.keys().collect::<Vec<_>>());
+    }
+
+    println!("Checking base functions...");
     for file in function_dir.read_dir()? {
         let entry = file?;
         let path = entry.path();
         let name = path.file_stem().expect("Should be a .s")
             .to_str().expect("Should be ASCII");
-        let mri = state.get_target_triple().register_info();
         if let Some(info) = funcs.get(name) {
             unseen.remove(name);
             let mut file = File::open(&path)?;
@@ -230,106 +438,15 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
                 continue;
             }
 
-            // Compute the read/write registers for this function.
-            fn get_reg_string(mri: &llvmmc::RegisterInfo,
-                              registers: &[&str]) -> (String, String) {
-                let regs : (Vec<_>, Vec<_>) = registers.iter()
-                    .map(|reg| {
-                        let reg_upper = reg.to_uppercase();
-                        let llreg = mri.get_register(&reg_upper);
-                        if let Some(llreg) = llreg {
-                            let top = llreg.get_top_register(mri);
-                            if top == llreg {
-                                return (top.name, None);
-                            }
-                            let offset = top.get_sub_register_slice(llreg, mri)
-                                .expect("Not in top level?");
-                            return (top.name, Some(offset));
-                        }
-                        return (reg, None);
-                    }).map(|(reg, off)| (reg.to_lowercase(), off))
-                    .map(|(mut reg, off)| {
-                        if reg.starts_with("zmm") {
-                            unsafe { reg.as_mut_vec()[0] = b'y' }
-                        }
-                        (reg, off)
-                    })
-                    .map(|(reg, off)| {
-                        if let Some(off) = off {
-                            let output = format!("{}:{}", &reg, off.1 / 8);
-                            (reg, output)
-                        } else {
-                            (reg.clone(), reg)
-                        }
-                    })
-                    .unzip();
-                let reg_str = regs.0.join(" ");
-                return (reg_str, regs.1.join(" "));
-            }
-            let (in_regs, _) = get_reg_string(mri, &info.def_in);
-            let (out_regs, out_valid) = get_reg_string(mri, &info.live_out);
-
-            // Dump the function to a file. Since we have a global module, just
-            // copy that to a new module and pull at the single function.
-            let mut temp_ir_path = env::temp_dir();
-            temp_ir_path.push("test-function.ll");
-            let mut temp_ir = File::create(&temp_ir_path)?;
-            let func = xlation.get_function_for_pseudo(info);
-            let module = xlation.module.clone();
-            unsafe {
-                use llvm_sys::core::*;
-                use llvm_sys::prelude::*;
-                enum LLVMOpaqueAttributeRef {};
-                type LLVMAttributeRef = *mut LLVMOpaqueAttributeRef;
-                extern "C" {
-                    fn LLVMCreateStringAttribute(C: LLVMContextRef,
-                                                 K: *const i8,
-                                                 KLen: u32,
-                                                 V: *const i8,
-                                                 VLen: u32) -> LLVMAttributeRef;
-                    fn LLVMAddAttributeAtIndex(F: LLVMValueRef,
-                                               Idx: u32, A: LLVMAttributeRef);
-                }
-                unsafe fn set_attr(func: LLVMValueRef, name: &str, val: &str) {
-                    let attr = LLVMCreateStringAttribute(
-                        LLVMGetTypeContext(LLVMTypeOf(func)),
-                        name.as_ptr() as *const i8,
-                        name.len() as u32,
-                        val.as_ptr() as *const i8,
-                        val.len() as u32);
-                    LLVMAddAttributeAtIndex(func, !0, attr);
-                }
-                let module : &llvm::Module = &module;
-                let module : LLVMModuleRef = module.into();
-                let mut fnptr = LLVMGetFirstFunction(module);
-                loop {
-                    let next = LLVMGetNextFunction(fnptr);
-                    let clean_fn : &llvm::Function = fnptr.into();
-                    if clean_fn.get_name() == func.get_name() {
-                        // Add in/out register parameters.
-                        set_attr(fnptr, "in", &in_regs);
-                        set_attr(fnptr, "out", &out_regs);
-                        // We need this to generate correct bindings for ymm registers.
-                        set_attr(fnptr, "target-features", "+avx");
-                        // Use regcall calling convention
-                        LLVMSetFunctionCallConv(fnptr, 92);
-                    } else if !LLVMGetFirstBasicBlock(fnptr).is_null() {
-                        LLVMDeleteFunction(fnptr);
-                    }
-                    fnptr = next;
-                    if fnptr.is_null() { break; }
-                }
-            }
-            write!(temp_ir, "{:?}", module)?;
-            temp_ir.flush()?;
-
-            // Copy the asm file and assemmble it.
+            // Copy the asm file and assemble it.
             let mut temp_s_path = env::temp_dir();
             temp_s_path.push("gold-function.s");
-            let mut temp_o_path = env::temp_dir();
-            temp_o_path.push("gold-function.o");
+
+            // STOKE uses a broken assembly format, fix it.
             let fix_shell = process::Command::new("sed")
+                // .SYM and SYM are treated as the same symbol name.
                 .arg("-e").arg(&format!("s/\\.{0}/{0}/g", name))
+                // Sign extend immediate parameters written in hex.
                 .arg("-e").arg(r"s/$0x\([8-f][0-9a-f]\{7\}\)/$0xffffffff\1/")
                 .arg(&path)
                 .output()?;
@@ -337,26 +454,9 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
             s_file.write(&fix_shell.stdout)?;
             s_file.flush()?;
 
-            // Assemble it now...
-            let assemble = process::Command::new("clang")
-                .arg("-c").arg(&temp_s_path)
-                .arg("-o").arg(&temp_o_path)
-                .status()?;
-            if !assemble.success() {
+            if !verify_equivalence(&temp_s_path, &xlation.module, name, state,
+                                   mri, &info.def_in, &info.live_out)? {
                 println!("Assembly function {} failed", name);
-                continue;
-            }
-
-            let success = process::Command::new(&asm_dir)
-                .arg(&testcase)
-                .arg(&temp_ir_path)
-                .arg(&temp_o_path)
-                .arg(&out_valid)
-                .status()?;
-
-            if !success.success() {
-                println!("Assembly function {} failed", name);
-                println!("out_valid: {:?}", out_valid);
                 panic!("die here");
             }
         } else {
