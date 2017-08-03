@@ -635,27 +635,44 @@ where S: for <'a> Compile<'a> {
 fn write_reg_byte(func: &Function, builder: &Builder, byte: u64) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
+    let td = unsafe {
+        let module = INTRINSIC_BASE.as_ref()
+            .expect("Set module first");
+        TargetData::new(module.get_target())
+    };
+    let int_ty = types::IntegerType::new(&ctx,
+        (*td).size_of_in_bits(func[1].get_type()) as usize);
     let val = builder.build_zext(
-        builder.build_trunc(
-            &*func[0], Type::get::<u8>(ctx)),
-            Type::get::<u64>(ctx));
-    let cleared_val = builder.build_and(&*func[1],
-        builder.build_not(
-            builder.build_shl(0xffu64.compile(ctx), (byte * 8).compile(ctx))));
+        builder.build_trunc(&*func[0], Type::get::<u8>(ctx)),
+        int_ty);
+    let mask = builder.build_zext(0xffu64.compile(ctx), int_ty);
+    let byte_shift = builder.build_zext((byte * 8).compile(ctx), int_ty);
+
+    let cleared_val = builder.build_and(
+        builder.build_bit_cast(&*func[1], int_ty),
+        builder.build_not(builder.build_shl(mask, byte_shift)));
     let result = builder.build_or(cleared_val,
-        builder.build_shl(val, (byte * 8).compile(ctx)));
+        builder.build_shl(val, byte_shift));
     let mut ret = Value::new_undef(func.get_signature().get_return());
-    ret = builder.build_insert_value(ret, result, 0);
+    ret = builder.build_insert_value(ret,
+        builder.build_bit_cast(result, func[1].get_type()), 0);
     builder.build_ret(ret);
 }
 
 fn read_reg_byte(func: &Function, builder: &Builder, byte: u64) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
-    let val = &*func[0];
-    let single = builder.build_and(
-        builder.build_ashr(val, (byte * 8).compile(ctx)),
-        0xffu64.compile(ctx));
+    let td = unsafe {
+        let module = INTRINSIC_BASE.as_ref()
+            .expect("Set module first");
+        TargetData::new(module.get_target())
+    };
+    let vec_ty = types::VectorType::new(Type::get::<u8>(ctx),
+        (*td).size_of(func[0].get_type()) as usize);
+    let val = builder.build_bit_cast(&*func[0], vec_ty);
+    let single = builder.build_zext(
+        builder.build_extract_element(val, byte.compile(ctx)),
+        Type::get::<u64>(ctx));
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, single, 0);
     builder.build_ret(ret);
@@ -1121,7 +1138,7 @@ macro_rules! move_pair {
     }
 }
 macro_rules! move_bytes {
-    ($reg:ident <- $byte_reg:ident, $index:expr, $index8:expr) => {{
+    (gp $reg:ident <- $byte_reg:ident, $index:expr, $index8:expr) => {{
         fn close_function<'a>(func: &'a Function, builder: &Builder) {
             write_reg_byte(func, builder, $index);
         }
@@ -1144,7 +1161,7 @@ macro_rules! move_bytes {
                     instr!(popfq))
         });
     }};
-    ($reg:ident -> $byte_reg:ident, $index:expr, $index8:expr) => {{
+    (gp $reg:ident -> $byte_reg:ident, $index:expr, $index8:expr) => {{
         fn close_function<'a>(func: &'a Function, builder: &Builder) {
             read_reg_byte(func, builder, $index);
         }
@@ -1161,10 +1178,126 @@ macro_rules! move_bytes {
                     instr!(popfq))
         });
     }};
+    (xmm low $reg:ident <- $byte_reg:ident, $index:expr, $index8:expr) => {{
+        fn close_function<'a>(func: &'a Function, builder: &Builder) {
+            write_reg_byte(func, builder, $index);
+        }
+        function!(fn concat!("move_", sub_reg!($byte_reg, u8), "_to_byte_",
+                             stringify!($index), "_of_", stringify!($reg)),
+                    close_function
+                    [sub_reg!($byte_reg, u8), sub_reg!($reg, xmm)] ->
+                    (sub_reg!($reg, xmm)) : ("r14", "r15", "ymm14", "ymm15") {
+            doc(concat!("move ", sub_reg!($byte_reg, u8), " to the byte ",
+                stringify!($index), " of ", stringify!($reg))), concat!(
+                    instr!(comment "zero all-ones xmm15"),
+                    instr!(e mov, u64, "$-0x1", r15),
+                    instr!(mov, u64, r15, xmm15),
+                    instr!(vpbroadcastw, nil, xmm15, xmm15),
+                    instr!(vbroadcastsd, nil, xmm15, ymm15),
+                    "\n",
+                    instr!(comment "load 0xFF into ymm14"),
+                    "\n  vpxor %ymm14, %ymm14, %ymm14",
+                    instr!(e mov, u64, "$0xff", r14),
+                    instr!(mov, u64, r14, xmm14),
+                    instr!(e pslld, u64, concat!("$", $index8), xmm14),
+                    "\n  vpxor %ymm15, %ymm14, %ymm14 # not %ymm14",
+                    "\n",
+                    instr!(comment "load byte into ymm15"),
+                    "\n  vpxor %ymm15, %ymm15, %ymm15",
+                    instr!(e mov, u64, "$0x0", r15),
+                    instr!(mov, u8, $byte_reg, r15),
+                    instr!(mov, u64, r15, xmm15),
+                    instr!(e pslld, u64, concat!("$", $index8), xmm15),
+                    "\n",
+                    "\n  vpand %ymm14, %ymm1, %ymm1",
+                    "\n  vpor %ymm15, %ymm1, %ymm1"
+                )
+        });
+    }};
+    (xmm low $reg:ident -> $byte_reg:ident, $index:expr, $index8:expr) => {{
+        fn close_function<'a>(func: &'a Function, builder: &Builder) {
+            read_reg_byte(func, builder, $index);
+        }
+        function!(fn concat!("move_byte_", stringify!($index), "_of_",
+                             stringify!($reg), "_to_", sub_reg!($byte_reg, u8)),
+                    close_function
+                    [sub_reg!($reg, xmm)] -> (sub_reg!($byte_reg, u8))
+                    : ("ymm15", "r15") {
+            doc(concat!("move the byte ", stringify!($index), " of ",
+                stringify!($reg), " to ", sub_reg!($byte_reg, u8))), concat!(
+                    instr!(vmovupd, nil, ymm1, ymm15),
+                    instr!(e psrld, u64, concat!("$", $index8), xmm15),
+                    instr!(mov, u64, xmm15, r15),
+                    instr!(mov, u8, r15, $byte_reg)
+                )
+        });
+    }};
+    (xmm high $reg:ident <- $byte_reg:ident, $index:expr, $index8:expr) => {{
+        fn close_function<'a>(func: &'a Function, builder: &Builder) {
+            write_reg_byte(func, builder, $index);
+        }
+        function!(fn concat!("move_", sub_reg!($byte_reg, u8), "_to_byte_",
+                             stringify!($index), "_of_", stringify!($reg)),
+                    close_function
+                    [sub_reg!($byte_reg, u8), stringify!($reg)] ->
+                    (stringify!($reg)) : ("r14", "r15", "ymm14", "ymm15") {
+            doc(concat!("move ", sub_reg!($byte_reg, u8), " to the byte ",
+                stringify!($index), " of ", stringify!($reg))), concat!(
+                    instr!(comment "zero all-ones xmm15"),
+                    instr!(e mov, u64, "$-0x1", r15),
+                    instr!(mov, u64, r15, xmm15),
+                    instr!(vpbroadcastw, nil, xmm15, xmm15),
+                    instr!(vbroadcastsd, nil, xmm15, ymm15),
+                    "\n",
+                    instr!(comment "load 0xFF into ymm14"),
+                    "\n  vpxor %ymm14, %ymm14, %ymm14",
+                    instr!(e mov, u64, "$0xff", r14),
+                    instr!(mov, u64, r14, xmm14),
+                    instr!(e pslld, u64, concat!("$", $index8), xmm14),
+                    "\n  vpxor %ymm15, %ymm14, %ymm14 # not %ymm14",
+                    "\n",
+                    instr!(comment "load byte into ymm15"),
+                    "\n  vpxor %ymm15, %ymm15, %ymm15",
+                    instr!(e mov, u64, "$0x0", r15),
+                    instr!(mov, u8, $byte_reg, r15),
+                    instr!(mov, u64, r15, xmm15),
+                    instr!(e pslld, u64, concat!("$", $index8), xmm15),
+                    "\n",
+                    instr!(nosize vperm2f128, "$0x1", ymm14, ymm14, ymm14),
+                    instr!(nosize vperm2f128, "$0x1", ymm15, ymm15, ymm15),
+                    "\n",
+                    "\n  vpand %ymm14, %ymm1, %ymm1",
+                    "\n  vpor %ymm15, %ymm1, %ymm1"
+                )
+        });
+    }};
+    (xmm high $reg:ident -> $byte_reg:ident, $index:expr, $index8:expr) => {{
+        fn close_function<'a>(func: &'a Function, builder: &Builder) {
+            read_reg_byte(func, builder, $index);
+        }
+        function!(fn concat!("move_byte_", stringify!($index), "_of_",
+                             stringify!($reg), "_to_", sub_reg!($byte_reg, u8)),
+                    close_function
+                    [stringify!($reg)] -> (sub_reg!($byte_reg, u8))
+                    : ("ymm15", "r15") {
+            doc(concat!("move the byte ", stringify!($index), " of ",
+                stringify!($reg), " to ", sub_reg!($byte_reg, u8))), concat!(
+                    instr!(vmovupd, nil, ymm1, ymm15),
+                    instr!(nosize vperm2f128, "$0x1", ymm15, ymm15, ymm15),
+                    instr!(e psrld, u64, concat!("$", $index8), xmm15),
+                    instr!(mov, u64, xmm15, r15),
+                    instr!(mov, u8, r15, $byte_reg)
+                )
+        });
+    }};
     (gp $reg:ident, [$($index:tt=$x8:expr),*]) => {
-        $(move_bytes!(rbx <- $reg, $index, $x8);)*
-        $(move_bytes!(rbx -> $reg, $index, $x8);)*
-    }
+        $(move_bytes!(gp rbx <- $reg, $index, $x8);)*
+        $(move_bytes!(gp rbx -> $reg, $index, $x8);)*
+    };
+    (xmm $half:tt $reg:ident, [$($index:tt=$x8:expr),*]) => {
+        $(move_bytes!(xmm $half ymm1 <- $reg, $index, $x8);)*
+        $(move_bytes!(xmm $half ymm1 -> $reg, $index, $x8);)*
+    };
 }
 macro_rules! move_xmm {
     ($regs:tt <> [$($xmm:ident),*]) => {
@@ -1435,6 +1568,18 @@ macro_rules! move_ymm {
         move_ymm!([xmm8 xmm9, xmm10 xmm11, xmm12 xmm13] <> [ymm1, ymm2, ymm3]);
         split_xmm!([xmm8 xmm9, xmm10 xmm11, xmm12 xmm13] <> [xmm1, xmm2, xmm3]);
         split_xmm!([xmm4 xmm5 xmm6 xmm7, xmm8 xmm9 xmm10 xmm11] <> [xmm1, xmm2, xmm3]);
+        move_bytes!(xmm low r8, [0="0x0", 1="0x1", 2="0x2", 3="0x3", 4="0x4",
+                    5="0x5", 6="0x6", 7="0x7", 8="0x8", 9="0x9", 10="0xa",
+                    11="0xb", 12="0xc", 13="0xd", 14="0xe", 15="0xf"]);
+        move_bytes!(xmm low r9, [0="0x0", 1="0x1", 2="0x2", 3="0x3", 4="0x4",
+                    5="0x5", 6="0x6", 7="0x7", 8="0x8", 9="0x9", 10="0xa",
+                    11="0xb", 12="0xc", 13="0xd", 14="0xe", 15="0xf"]);
+        move_bytes!(xmm high r8, [16="0x0", 17="0x1", 18="0x2", 19="0x3",
+                    20="0x4", 21="0x5", 22="0x6", 23="0x7", 24="0x8", 25="0x9",
+                    26="0xa", 27="0xb", 28="0xc", 29="0xd", 30="0xe", 31="0xf"]);
+        move_bytes!(xmm high r9, [16="0x0", 17="0x1", 18="0x2", 19="0x3",
+                    20="0x4", 21="0x5", 22="0x6", 23="0x7", 24="0x8", 25="0x9",
+                    26="0xa", 27="0xb", 28="0xc", 29="0xd", 30="0xe", 31="0xf"]);
         return functions;
     }
 }

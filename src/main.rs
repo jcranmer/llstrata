@@ -225,6 +225,11 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
                 continue;
             }
 
+            // XXX: AVX-2 instruction, can't test on huitzilopochtli.
+            if contents.contains("vpbroadcastw") {
+                continue;
+            }
+
             // Compute the read/write registers for this function.
             fn get_reg_string(mri: &llvmmc::RegisterInfo,
                               registers: &[&str]) -> (String, String) {
