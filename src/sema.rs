@@ -4,6 +4,7 @@ use llvmmc::TargetTriple;
 use mcsema::TranslationState;
 use state::InstructionInfo;
 use std::collections::HashMap;
+use std::fmt;
 use std::mem;
 
 pub struct BaseInfo {
@@ -44,6 +45,40 @@ fn get_intrinsic<T>(name: &str) ->
             module.get_function(name).unwrap()
         }
     }
+}
+
+fn get_typed_intrinsic<'a>(name: &str, tys: &[&'a Type], args: &[&'a Type],
+                       ret: &'a Type) -> &'static Function {
+    fn ty_name(ty: &Type, f: &mut fmt::Write) -> fmt::Result {
+        if ty.is_integer() {
+            write!(f, "{:?}", ty)
+        } else if ty.is_float() {
+            match format!("{:?}", ty).as_str() {
+                "double" => write!(f, "f64"),
+                "float" => write!(f, "f32"),
+                s => panic!("Unknown type {}", s)
+            }
+        } else if let Some(ty) = types::VectorType::from_super(ty) {
+            write!(f, "v{}", ty.get_size())?;
+            ty_name(ty.get_element(), f)
+        } else {
+            panic!("Unknown type {:?}", ty);
+        }
+    }
+
+    let mut name_str = String::from(name);
+    for ty in tys {
+        name_str.push('.');
+        ty_name(ty, &mut name_str).unwrap();
+    }
+
+    let module = unsafe { INTRINSIC_BASE.as_ref()
+        .expect("Install the module for getting intrinsics first") };
+    if module.get_function(&name_str).is_none() {
+        let fn_ty = types::FunctionType::new(ret, args);
+        module.add_function(&name_str, fn_ty);
+    }
+    module.get_function(&name_str).unwrap()
 }
 
 fn cast_to_xmm<'a>(ctx: &'a Context, builder: &'a Builder,
@@ -449,6 +484,95 @@ fn shrq_r64_cl(func: &Function, builder: &Builder) {
     builder.build_ret(ret);
 }
 
+macro_rules! define_vec {
+    (fn $name:ident<$vec_ty:ident=($vec:ty, $count:expr)>
+     ($builder:ident, $($arg:ident),*) -> $res:ident {
+         $($body:tt)*
+    }) => {
+        fn $name(func: &Function, $builder: &Builder) {
+            let ctx = func.get_context();
+            $builder.position_at_end(func.append("entry"));
+            let ymm_ty = Type::get::<[u64; 4]>(ctx);
+            let $vec_ty = Type::get::<[$vec; $count]>(ctx);
+            let mut i = -1;
+            $(
+                i += 1;
+                let $arg = $builder.build_bit_cast(&*func[i as usize], $vec_ty);
+            )*
+            let $res = { $($body)* };
+            let res = $builder.build_bit_cast($res, ymm_ty);
+            let mut ret = Value::new_undef(func.get_signature().get_return());
+            ret = $builder.build_insert_value(ret, res, 0);
+            $builder.build_ret(ret);
+        }
+    };
+    ($(fn $name:ident<$v:ident=$vargs:tt> $args:tt -> $res:ident $body:tt)+) => {
+        $(define_vec!(fn $name<$v=$vargs> $args -> $res $body);)*
+    };
+}
+
+define_vec! {
+    fn vaddpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
+        builder.build_add(lhs, rhs)
+    }
+    fn vaddps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, lhs, rhs) -> res {
+        builder.build_add(lhs, rhs)
+    }
+    fn vcvtdq2ps_ymm_ymm<vec_ty=(i32, 8)>(builder, arg) -> res {
+        builder.build_si_to_fp(arg, Type::get::<[f32; 8]>(vec_ty.get_context()))
+    }
+    fn vcvtps2dq_ymm_ymm<vec_ty=(f32, 8)>(builder, arg) -> res {
+        builder.build_fp_to_si(arg, Type::get::<[i32; 8]>(vec_ty.get_context()))
+    }
+    fn vdivpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
+        builder.build_div(lhs, rhs)
+    }
+    fn vdivps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, lhs, rhs) -> res {
+        builder.build_div(lhs, rhs)
+    }
+    fn vfmadd132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.fmuladd", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg1, arg2, arg3])
+    }
+    fn vmaxpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
+        builder.build_select(builder.build_cmp(lhs, rhs, Predicate::LessThan),
+            lhs, rhs)
+    }
+    fn vmulpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
+        builder.build_mul(lhs, rhs)
+    }
+    fn vmulps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, lhs, rhs) -> res {
+        builder.build_mul(lhs, rhs)
+    }
+    fn vrcpps_ymm_ymm<vec_ty=(f32, 8)>(builder, arg) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.x86.avx.rcp.ps.256", &[],
+                                            &[vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg])
+    }
+    fn vrsqrtps_ymm_ymm<vec_ty=(f32, 8)>(builder, arg) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.x86.avx.rsqrt.ps.256", &[],
+                                            &[vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg])
+    }
+    fn vsqrtpd_ymm_ymm<vec_ty=(f64, 4)>(builder, arg) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.sqrt", &[vec_ty],
+                                            &[vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg])
+    }
+    fn vsqrtps_ymm_ymm<vec_ty=(f32, 8)>(builder, arg) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.sqrt", &[vec_ty],
+                                            &[vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg])
+    }
+    fn vsubpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
+        builder.build_sub(lhs, rhs)
+    }
+    fn vsubps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, lhs, rhs) -> res {
+        builder.build_sub(lhs, rhs)
+    }
+}
+
 fn vzeroall(func: &Function, builder: &Builder) {
     builder.position_at_end(func.append("entry"));
     let ret = unsafe {
@@ -532,6 +656,36 @@ pub fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
     base_instruction!(shrq_r64_cl, "shrq %cl, %rbx",
                       in(cl, rbx, cf, pf, zf, sf, of),
                       out(rbx, pf, zf, sf));
+    base_instruction!(vaddpd_ymm_ymm_ymm, "vaddpd %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vaddps_ymm_ymm_ymm, "vaddps %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vcvtdq2ps_ymm_ymm, "vcvtdq2ps %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
+    //base_instruction!(vcvtps2dq_ymm_ymm, "vcvtps2dq %ymm2, %ymm1",
+    //                  in(ymm2), out(ymm1));
+    base_instruction!(vdivpd_ymm_ymm_ymm, "vdivpd %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vdivps_ymm_ymm_ymm, "vdivps %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vfmadd132pd_ymm_ymm_ymm, "vfmadd132pd %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vmulpd_ymm_ymm_ymm, "vmulpd %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vmulps_ymm_ymm_ymm, "vmulps %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vrcpps_ymm_ymm, "vrcpps %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
+    base_instruction!(vrsqrtps_ymm_ymm, "vrsqrtps %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
+    base_instruction!(vsqrtpd_ymm_ymm, "vsqrtpd %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
+    base_instruction!(vsqrtps_ymm_ymm, "vsqrtps %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
+    base_instruction!(vsubpd_ymm_ymm_ymm, "vsubpd %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vsubps_ymm_ymm_ymm, "vsubps %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
     base_instruction!(vzeroall, "vzeroall ",
                       in(),
                       out(ymm0, ymm1, ymm2, ymm3, ymm4, ymm5, ymm6, ymm7,

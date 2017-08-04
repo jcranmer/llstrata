@@ -375,6 +375,11 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
             continue;
         }
 
+        // This requires fma support, sigh.
+        if inst.opcode.contains("132") {
+            continue;
+        }
+
         // LLVM function name
         let func = xlation.get_function(&xlation.get_llvm_instruction(&inst));
         if !verify_equivalence(&s_path, &xlation.module,
