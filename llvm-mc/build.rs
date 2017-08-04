@@ -110,6 +110,7 @@ fn main() {
     .opaque_type("llvm::DenseMapPair")
     .opaque_type("llvm::SmallVector.*")
     .hide_type("llvm::DenseMap_BaseT")
+    .hide_type("llvm::ilist_node_with_parent")
     // This is a bug in the Rust compiler, as I understand it.
     .raw_line("#[allow(dead_code,improper_ctypes)]")
     .generate().expect("Unable to generate bindings");
