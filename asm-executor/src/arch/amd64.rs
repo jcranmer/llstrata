@@ -365,7 +365,14 @@ pub fn init_exceptions() {
     fn signal_handler(_: libc::c_int, _: *const libc::siginfo_t,
                       context: *mut libc::ucontext_t) {
         unsafe {
-            let mut regs = &mut context.as_mut().unwrap().uc_mcontext.gregs;
+            // Get the machine context from the context parameter. This contains
+            // the general purpose registers. Note that libc doesn't expose this
+            // part of the context for musl, but since this is based on the
+            // Linux kernel (I think?), it should be the same on Linux rather
+            // than libc-dependent.
+            let mut regs : &mut [i64; 32] = mem::transmute(
+                &mut context.as_mut().unwrap().uc_mcontext);
+
             // Store the trap value in the register struct. (This is REG_TRAPNO
             // in the thread context--it's so nice for Linux to actually pass
             // this along for us).
@@ -376,7 +383,6 @@ pub fn init_exceptions() {
             // that our functions have unwind tables set up properly in the
             // first place.
             regs[16] = asm_signal_return as usize as i64;
-            libc::setcontext(context);
         }
     }
 
