@@ -1,5 +1,6 @@
 use llvm::*;
 use llvm_sys::core::*;
+use llvm_sys::LLVMRealPredicate;
 use llvmmc::TargetTriple;
 use mcsema::TranslationState;
 use state::InstructionInfo;
@@ -511,6 +512,7 @@ macro_rules! define_vec {
     };
 }
 
+static NULL : &[u8; 1] = b"\0";
 define_vec! {
     fn vaddpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
         builder.build_add(lhs, rhs)
@@ -575,8 +577,32 @@ define_vec! {
         builder.build_call(intrinsic, &[arg1, arg3, arg2])
     }
     fn vmaxpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
-        builder.build_select(builder.build_cmp(lhs, rhs, Predicate::LessThan),
-            lhs, rhs)
+        let cmp = unsafe {
+            LLVMBuildFCmp(builder.into(), LLVMRealPredicate::LLVMRealOGT,
+                lhs.into(), rhs.into(), NULL as *const u8 as *const i8).into()
+        };
+        builder.build_select(cmp, lhs, rhs)
+    }
+    fn vmaxps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, lhs, rhs) -> res {
+        let cmp = unsafe {
+            LLVMBuildFCmp(builder.into(), LLVMRealPredicate::LLVMRealOGT,
+                lhs.into(), rhs.into(), NULL as *const u8 as *const i8).into()
+        };
+        builder.build_select(cmp, lhs, rhs)
+    }
+    fn vminpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
+        let cmp = unsafe {
+            LLVMBuildFCmp(builder.into(), LLVMRealPredicate::LLVMRealOLT,
+                lhs.into(), rhs.into(), NULL as *const u8 as *const i8).into()
+        };
+        builder.build_select(cmp, lhs, rhs)
+    }
+    fn vminps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, lhs, rhs) -> res {
+        let cmp = unsafe {
+            LLVMBuildFCmp(builder.into(), LLVMRealPredicate::LLVMRealOLT,
+                lhs.into(), rhs.into(), NULL as *const u8 as *const i8).into()
+        };
+        builder.build_select(cmp, lhs, rhs)
     }
     fn vmulpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
         builder.build_mul(lhs, rhs)
@@ -723,6 +749,14 @@ pub fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
                       in(ymm1, ymm2, ymm3), out(ymm1));
     base_instruction!(vfnmsub132ps_ymm_ymm_ymm, "vfnmsub132ps %ymm3, %ymm2, %ymm1",
                       in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vmaxpd_ymm_ymm_ymm, "vmaxpd %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vmaxps_ymm_ymm_ymm, "vmaxps %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vminpd_ymm_ymm_ymm, "vminpd %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
+    base_instruction!(vminps_ymm_ymm_ymm, "vminps %ymm3, %ymm2, %ymm1",
+                      in(ymm2, ymm3), out(ymm1));
     base_instruction!(vmulpd_ymm_ymm_ymm, "vmulpd %ymm3, %ymm2, %ymm1",
                       in(ymm2, ymm3), out(ymm1));
     base_instruction!(vmulps_ymm_ymm_ymm, "vmulps %ymm3, %ymm2, %ymm1",
