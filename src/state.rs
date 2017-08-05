@@ -138,6 +138,10 @@ impl InstructionInfo {
             ii.live_out = String::from(json.get("live_out").unwrap().as_str().unwrap());
         }
 
+        // We're not modelling the MXCSR effects, particularly the rounding
+        // control. So just strip this off.
+        ii.def_in = ii.def_in.replace(" %mxcsr::rc[0]", "");
+
         return ii;
     }
 

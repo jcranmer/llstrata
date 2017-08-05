@@ -524,7 +524,45 @@ define_vec! {
         builder.build_si_to_fp(arg, Type::get::<[f32; 8]>(vec_ty.get_context()))
     }
     fn vcvtps2dq_ymm_ymm<vec_ty=(f32, 8)>(builder, arg) -> res {
-        builder.build_fp_to_si(arg, Type::get::<[i32; 8]>(vec_ty.get_context()))
+        let i32_vec = Type::get::<[i32; 8]>(vec_ty.get_context());
+        let intrinsic = get_typed_intrinsic("llvm.x86.avx.cvt.ps2dq.256", &[],
+                                            &[vec_ty], i32_vec);
+        builder.build_call(intrinsic, &[arg])
+    }
+    fn vcvtpd2dq_xmm_ymm<vec_ty=(f64, 4)>(builder, arg) -> res {
+        let i32_vec = Type::get::<[i32; 4]>(vec_ty.get_context());
+        let zero = [0u32; 4].compile(vec_ty.get_context());
+        let intrinsic = get_typed_intrinsic("llvm.x86.avx.cvt.pd2dq.256", &[],
+                                            &[vec_ty], i32_vec);
+        builder.build_shuffle_vector(
+            builder.build_call(intrinsic, &[arg]),
+            zero,
+            &[0, 1, 2, 3, 4, 5, 6, 7])
+    }
+    fn vcvtpd2ps_xmm_ymm<vec_ty=(f64, 4)>(builder, arg) -> res {
+        let f32_vec = Type::get::<[f32; 4]>(vec_ty.get_context());
+        let zero = [0f32; 4].compile(vec_ty.get_context());
+        builder.build_shuffle_vector(
+            builder.build_fpcast(arg, f32_vec),
+            zero,
+            &[0, 1, 2, 3, 4, 5, 6, 7])
+    }
+    fn vcvtps2pd_ymm_xmm<vec_ty=(f32, 8)>(builder, arg) -> res {
+        let xmm = builder.build_shuffle_vector(arg, arg, &[0, 1, 2, 3]);
+        let f64_vec = Type::get::<[f64; 4]>(vec_ty.get_context());
+        builder.build_fpcast(xmm, f64_vec)
+    }
+    fn vcvttpd2dq_xmm_ymm<vec_ty=(f64, 4)>(builder, arg) -> res {
+        let i32_vec = Type::get::<[i32; 4]>(vec_ty.get_context());
+        let zero = [0u32; 4].compile(vec_ty.get_context());
+        builder.build_shuffle_vector(
+            builder.build_fp_to_si(arg, i32_vec),
+            zero,
+            &[0, 1, 2, 3, 4, 5, 6, 7])
+    }
+    fn vcvttps2dq_ymm_ymm<vec_ty=(f32, 8)>(builder, arg) -> res {
+        let i32_vec = Type::get::<[i32; 8]>(vec_ty.get_context());
+        builder.build_fp_to_si(arg, i32_vec)
     }
     fn vdivpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
         builder.build_div(lhs, rhs)
@@ -727,8 +765,18 @@ pub fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
                       in(ymm2, ymm3), out(ymm1));
     base_instruction!(vcvtdq2ps_ymm_ymm, "vcvtdq2ps %ymm2, %ymm1",
                       in(ymm2), out(ymm1));
-    //base_instruction!(vcvtps2dq_ymm_ymm, "vcvtps2dq %ymm2, %ymm1",
-    //                  in(ymm2), out(ymm1));
+    base_instruction!(vcvtps2dq_ymm_ymm, "vcvtps2dq %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
+    base_instruction!(vcvtpd2dq_xmm_ymm, "vcvtpd2dq %ymm1, %xmm1",
+                      in(ymm1), out(ymm1));
+    base_instruction!(vcvtpd2ps_xmm_ymm, "vcvtpd2ps %ymm1, %xmm1",
+                      in(ymm1), out(ymm1));
+    base_instruction!(vcvtps2pd_ymm_xmm, "vcvtps2pd %xmm2, %ymm1",
+                      in(xmm2), out(ymm1));
+    base_instruction!(vcvttpd2dq_xmm_ymm, "vcvttpd2dq %ymm1, %xmm1",
+                      in(ymm1), out(ymm1));
+    base_instruction!(vcvttps2dq_ymm_ymm, "vcvttps2dq %ymm2, %ymm1",
+                      in(ymm2), out(ymm1));
     base_instruction!(vdivpd_ymm_ymm_ymm, "vdivpd %ymm3, %ymm2, %ymm1",
                       in(ymm2, ymm3), out(ymm1));
     base_instruction!(vdivps_ymm_ymm_ymm, "vdivps %ymm3, %ymm2, %ymm1",
