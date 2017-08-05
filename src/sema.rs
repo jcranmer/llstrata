@@ -533,7 +533,46 @@ define_vec! {
     fn vfmadd132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
         let intrinsic = get_typed_intrinsic("llvm.fmuladd", &[vec_ty],
                                             &[vec_ty, vec_ty, vec_ty], vec_ty);
-        builder.build_call(intrinsic, &[arg1, arg2, arg3])
+        builder.build_call(intrinsic, &[arg1, arg3, arg2])
+    }
+    fn vfmadd132ps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.fmuladd", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg1, arg3, arg2])
+    }
+    fn vfmsub132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.fmuladd", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        let zero = [0f64; 4].compile(vec_ty.get_context());
+        let neg = builder.build_sub(zero, arg2);
+        builder.build_call(intrinsic, &[arg1, arg3, neg])
+    }
+    fn vfmsub132ps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.fmuladd", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        let zero = [0f32; 8].compile(vec_ty.get_context());
+        let neg = builder.build_sub(zero, arg2);
+        builder.build_call(intrinsic, &[arg1, arg3, neg])
+    }
+    fn vfnmadd132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmadd.pd256", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg1, arg3, arg2])
+    }
+    fn vfnmadd132ps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmadd.ps256", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg1, arg3, arg2])
+    }
+    fn vfnmsub132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmsub.pd256", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg1, arg3, arg2])
+    }
+    fn vfnmsub132ps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, arg1, arg2, arg3) -> res {
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmsub.ps256", &[vec_ty],
+                                            &[vec_ty, vec_ty, vec_ty], vec_ty);
+        builder.build_call(intrinsic, &[arg1, arg3, arg2])
     }
     fn vmaxpd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, lhs, rhs) -> res {
         builder.build_select(builder.build_cmp(lhs, rhs, Predicate::LessThan),
@@ -669,6 +708,20 @@ pub fn get_base_instructions() -> HashMap<&'static str, BaseInfo> {
     base_instruction!(vdivps_ymm_ymm_ymm, "vdivps %ymm3, %ymm2, %ymm1",
                       in(ymm2, ymm3), out(ymm1));
     base_instruction!(vfmadd132pd_ymm_ymm_ymm, "vfmadd132pd %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfmadd132ps_ymm_ymm_ymm, "vfmadd132ps %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfmsub132pd_ymm_ymm_ymm, "vfmsub132pd %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfmsub132ps_ymm_ymm_ymm, "vfmsub132ps %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfnmadd132pd_ymm_ymm_ymm, "vfnmadd132pd %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfnmadd132ps_ymm_ymm_ymm, "vfnmadd132ps %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfnmsub132pd_ymm_ymm_ymm, "vfnmsub132pd %ymm3, %ymm2, %ymm1",
+                      in(ymm1, ymm2, ymm3), out(ymm1));
+    base_instruction!(vfnmsub132ps_ymm_ymm_ymm, "vfnmsub132ps %ymm3, %ymm2, %ymm1",
                       in(ymm1, ymm2, ymm3), out(ymm1));
     base_instruction!(vmulpd_ymm_ymm_ymm, "vmulpd %ymm3, %ymm2, %ymm1",
                       in(ymm2, ymm3), out(ymm1));
