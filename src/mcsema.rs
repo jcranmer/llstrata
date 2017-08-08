@@ -466,6 +466,10 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         if known_insts.iter().any(|inst| inst.name == name) {
             continue;
         }
+        // Don't generate semantics for this base instruction.
+        if name == "MOV64ri32" {
+            continue;
+        }
         if module.get_function(base[0].opcode.name).is_some() {
             let mut in_parts = Vec::new();
             let mut out_parts = Vec::new();
@@ -520,7 +524,11 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         }
     }
 
-    println!("{:?}", module);
+    {
+        use std::io::Write;
+        let mut ll_file = File::create("/tmp/mcsema.ll").unwrap();
+        write!(ll_file, "{:?}", module).unwrap();
+    }
     unsafe {
         use std::ffi::CString;
 
@@ -528,5 +536,9 @@ pub fn write_translations(state: &TranslationState, file: &Path) {
         write_file(state.module.as_ptr(), filename.as_ptr(),
                    known_insts.as_slice().as_ptr(), known_insts.len());
     }
-    println!("{:?}", module);
+    {
+        use std::io::Write;
+        let mut ll_file = File::create("/tmp/mcsema-opt.ll").unwrap();
+        write!(ll_file, "{:?}", module).unwrap();
+    }
 }

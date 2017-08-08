@@ -1,4 +1,5 @@
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringExtras.h>
 #include <llvm/IR/InstVisitor.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
@@ -97,13 +98,21 @@ public:
   }
 
   raw_ostream &getType(Type *T) {
-      if (IntegerType *IT = dyn_cast<IntegerType>(T)) {
-          out << "IntegerType::get(block->getContext(), "
-              << IT->getBitWidth() << ")";
-      } else {
-          assert(false && "We don't know the current type");
-      }
-      return out;
+    if (IntegerType *IT = dyn_cast<IntegerType>(T)) {
+      out << "IntegerType::get(block->getContext(), "
+        << IT->getBitWidth() << ")";
+    } else if (VectorType *VT = dyn_cast<VectorType>(T)) {
+      out << "VectorType::get(";
+      getType(VT->getElementType()) << ", " << VT->getNumElements() << ")";
+    } else if (T->isFloatTy()) {
+      out << "Type::getFloatTy(block->getContext())";
+    } else if (T->isDoubleTy()) {
+      out << "Type::getDoubleTy(block->getContext())";
+    } else {
+      T->dump();
+      assert(false && "We don't know the current type");
+    }
+    return out;
   }
 
   void visitReturnInst(ReturnInst &I) {
@@ -135,6 +144,8 @@ public:
     opcode_name[0] = std::toupper(opcode_name[0]);
     if (StringRef(opcode_name).endswith("shr"))
       opcode_name[1] = 'S';
+    else if (opcode_name[0] == 'F')
+      opcode_name[1] = std::toupper(opcode_name[1]);
 
     out << "  llvm::Value *" << var_name << " = BinaryOperator::Create("
       << "Instruction::" << opcode_name << ", ";
@@ -174,18 +185,44 @@ public:
 
     out << "  auto in" << var_name << " = Intrinsic::getDeclaration("
       << "block->getParent()->getParent(), ";
-    if (I.getIntrinsicID() == Intrinsic::ctpop) {
-      out << "llvm::Intrinsic::ctpop, "
-        << "llvm::Type::getInt8Ty(block->getContext()));\n";
-    } else if (I.getIntrinsicID() == Intrinsic::uadd_with_overflow) {
-      out << "llvm::Intrinsic::uadd_with_overflow, ";
-      getType(I.getArgOperand(0)->getType()) << ");\n";
-    } else if (I.getIntrinsicID() == Intrinsic::sadd_with_overflow) {
-      out << "llvm::Intrinsic::sadd_with_overflow, ";
-      getType(I.getArgOperand(0)->getType()) << ");\n";
-    } else {
-      assert(false && "We found an intrinsic we don't know about");
+
+    SmallVector<Intrinsic::IITDescriptor, 3> descriptors;
+    Intrinsic::getIntrinsicInfoTableEntries(I.getIntrinsicID(), descriptors);
+    StringRef name = I.getCalledFunction()->getName();
+    unsigned min_arg_count = 0;
+    for (auto desc : descriptors) {
+      switch (desc.Kind) {
+      case Intrinsic::IITDescriptor::Argument:
+      case Intrinsic::IITDescriptor::ExtendArgument:
+      case Intrinsic::IITDescriptor::TruncArgument:
+      case Intrinsic::IITDescriptor::HalfVecArgument:
+      case Intrinsic::IITDescriptor::SameVecWidthArgument:
+      case Intrinsic::IITDescriptor::PtrToArgument:
+        break;
+      default:
+        continue;
+      }
+      unsigned num = desc.getArgumentNumber();
+      assert(num == 0 && "Multi-type intrinsics are unhandled");
+      min_arg_count = std::max(num + 1, min_arg_count);
     }
+    // The last few . characters are the types.
+    for (unsigned i = 0; i < min_arg_count; i++) {
+      name = name.rsplit('.').first;
+    }
+    out << "llvm::Intrinsic::";
+    SmallVector<StringRef, 5> name_comps;
+    name.split(name_comps, '.');
+    out << join(name_comps.begin() + 1, name_comps.end(), "_");
+
+    if (min_arg_count == 1) {
+      out << ", ";
+      getType(I.getFunctionType()->params()[0]);
+    } else if (min_arg_count > 1) {
+      assert(false && "Multi-type intrinsics are unhandled");
+    }
+
+    out << ");\n";
     out << "  llvm::Value *" << var_name << " = CallInst::Create("
       << "in" << var_name << ", ArrayRef<Value *>({";
     bool comma = false;
@@ -204,6 +241,18 @@ public:
     getValue(I.getCondition()) << ", ";
     getValue(I.getTrueValue()) << ", ";
     getValue(I.getFalseValue()) << ", \"\", block);\n";
+  }
+  void visitShuffleVectorInst(ShuffleVectorInst &I) {
+    // If we already handled this instruction, don't do so again.
+    if (variables.find(&I) != variables.end())
+      return;
+
+    std::string var_name = makeName();
+    variables.insert(std::make_pair(&I, var_name));
+    out << "  llvm::Value *" << var_name << " = new ShuffleVectorInst(";
+    getValue(I.getOperand(0)) << ", ";
+    getValue(I.getOperand(1)) << ", ";
+    getValue(I.getOperand(2)) << ", \"\", block);\n";
   }
 
 
@@ -228,12 +277,44 @@ public:
         out << "  F_WRITE(block, llvm::X86::" << reg_name << ", ";
         getValue(val) << ");\n";
       }
+    } else if (elTy->isVectorTy()) {
+      int size = elTy->getPrimitiveSizeInBits();
+      out << "  R_WRITE<" << size << ">(block, inst.getOperand(" << reg_name <<
+        ").getReg(), CastInst::CreateBitOrPointerCast(";
+      getValue(val) << ", ";
+      getType(Type::getIntNTy(elTy->getContext(), size)) << "));\n";
     } else {
       out << "  R_WRITE<64>(block, inst.getOperand(" << reg_name << ").getReg(), ";
       getValue(val) << ");\n";
     }
   }
 
+  Value *getSmallRead(Value *argument) {
+    assert(argument->getType()->isVectorTy() && "Must be a vector type");
+    // We must only use the argument to extract the low word.
+    if (!argument->hasOneUse())
+      return argument;
+    // The use we're looking for should be shufflevector %arg, undef, <...>,
+    // where the operands are 0..1. Note that LLVM normalizes the code to this
+    // form, independent of how we originally wrote it.
+    auto SV = dyn_cast<ShuffleVectorInst>(*argument->user_begin());
+    if (!SV)
+      return argument;
+    if (SV->getOperand(0) != argument || !isa<UndefValue>(SV->getOperand(1)))
+      return argument;
+    auto outTy = SV->getType();
+    if (outTy->getPrimitiveSizeInBits() != 128)
+      return argument;
+
+    // Check that the shuffle mask is correct.
+    for (unsigned i = 0; i < outTy->getNumElements(); i++) {
+      if (SV->getMaskValue(i) != (signed)i)
+        return argument;
+    }
+
+    // Everything's good--return the shufflevector as the real argument instead.
+    return SV;
+  }
   void addArguments(Function *F) {
     auto arg_value = F->arg_begin();
     auto arg_index = 0;
@@ -249,8 +330,23 @@ public:
       } else if (arg.startswith("flag:")) {
         out << "F_READ(block, llvm::X86::" << arg.substr(5) << ");\n";
       } else {
-        out << "R_READ<64>(block, inst.getOperand(" << arg
+        Type *argTy = argument->getType();
+        if (argTy->isVectorTy()) {
+          Value *realArgument = getSmallRead(argument);
+          if (argument != realArgument) {
+            argument = realArgument;
+            variables.insert(std::make_pair(argument, name));
+            argTy = argument->getType();
+          }
+        }
+        int size = argTy->getPrimitiveSizeInBits();
+        out << "R_READ<" << size << ">(block, inst.getOperand(" << arg
           << ").getReg());\n";
+        if (argTy->isVectorTy()) {
+          out << "  " << name << " = " << "CastInst::CreateBitOrPointerCast("
+            << name << ", ";
+          getType(argTy) << ");\n";
+        }
       }
     }
   }

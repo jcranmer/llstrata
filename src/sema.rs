@@ -595,22 +595,22 @@ define_vec! {
         builder.build_call(intrinsic, &[arg1, arg3, neg])
     }
     fn vfnmadd132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
-        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmadd.pd256", &[vec_ty],
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmadd.pd.256", &[],
                                             &[vec_ty, vec_ty, vec_ty], vec_ty);
         builder.build_call(intrinsic, &[arg1, arg3, arg2])
     }
     fn vfnmadd132ps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, arg1, arg2, arg3) -> res {
-        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmadd.ps256", &[vec_ty],
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmadd.ps.256", &[],
                                             &[vec_ty, vec_ty, vec_ty], vec_ty);
         builder.build_call(intrinsic, &[arg1, arg3, arg2])
     }
     fn vfnmsub132pd_ymm_ymm_ymm<vec_ty=(f64, 4)>(builder, arg1, arg2, arg3) -> res {
-        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmsub.pd256", &[vec_ty],
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmsub.pd.256", &[],
                                             &[vec_ty, vec_ty, vec_ty], vec_ty);
         builder.build_call(intrinsic, &[arg1, arg3, arg2])
     }
     fn vfnmsub132ps_ymm_ymm_ymm<vec_ty=(f32, 8)>(builder, arg1, arg2, arg3) -> res {
-        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmsub.ps256", &[vec_ty],
+        let intrinsic = get_typed_intrinsic("llvm.x86.fma.vfnmsub.ps.256", &[],
                                             &[vec_ty, vec_ty, vec_ty], vec_ty);
         builder.build_call(intrinsic, &[arg1, arg3, arg2])
     }
