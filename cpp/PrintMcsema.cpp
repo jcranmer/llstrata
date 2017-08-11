@@ -86,10 +86,40 @@ public:
       out << "llvm::ConstantInt::get(" <<
         "llvm::IntegerType::get(block->getContext(), " << C->getBitWidth() << "), "
         << C->getZExtValue() << "U, " << C->isNegative() << ")";
+    } else if (isa<ConstantAggregateZero>(V)) {
+      out << "llvm::Constant::getNullValue(";
+      getType(V->getType()) << ")";
+    } else if (auto C = dyn_cast<ConstantDataVector>(V)) {
+      out << "llvm::ConstantDataVector::get(block->getContext(), llvm::ArrayRef<";
+      Type *elTy = C->getType()->getElementType();
+      bool isInt = isa<IntegerType>(elTy);
+      if (isInt) {
+        out << "uint" << elTy->getIntegerBitWidth() << "_t";
+      } else if (elTy->isFloatTy()) {
+        out << "float";
+      } else if (elTy->isDoubleTy()) {
+        out << "double";
+      }
+      out << ">({";
+      bool first = true;
+      for (unsigned i = 0; i < C->getNumElements(); i++) {
+        if (!first) out << ", ";
+        first = false;
+        if (isInt) {
+          out << C->getElementAsInteger(i);
+        } else {
+          out << C->getElementAsDouble(i);
+        }
+      }
+      out << "}))";
+    } else if (isa<UndefValue>(V)) {
+      out << "llvm::UndefValue::get(";
+      getType(V->getType()) << ")";
     } else {
       auto val = variables.find(V);
       if (val == variables.end()) {
-        assert("We don't know what we're doing");
+        V->dump();
+        assert(false && "We don't know what we're doing");
       } else {
         out << val->second;
       }
@@ -263,6 +293,12 @@ public:
 
   void handleReturn(unsigned index, Type *elTy, Value *val) {
     StringRef reg_name = out_regs[index];
+    std::string output;
+    if (reg_name.startswith("reg:")) {
+      output = (Twine("llvm::X86::") + reg_name.substr(4)).str();
+    } else {
+      output = (Twine("inst.getOperand(") + reg_name + ").getReg()").str();
+    }
     // Is this a flag?
     if (elTy->isIntegerTy(1)) {
       if (reg_name.startswith("flag:"))
@@ -279,12 +315,12 @@ public:
       }
     } else if (elTy->isVectorTy()) {
       int size = elTy->getPrimitiveSizeInBits();
-      out << "  R_WRITE<" << size << ">(block, inst.getOperand(" << reg_name <<
-        ").getReg(), CastInst::CreateBitOrPointerCast(";
+      out << "  R_WRITE<" << size << ">(block, " << output <<
+        ", CastInst::Create(Instruction::BitCast, ";
       getValue(val) << ", ";
-      getType(Type::getIntNTy(elTy->getContext(), size)) << "));\n";
+      getType(Type::getIntNTy(elTy->getContext(), size)) << ", \"\", block));\n";
     } else {
-      out << "  R_WRITE<64>(block, inst.getOperand(" << reg_name << ").getReg(), ";
+      out << "  R_WRITE<64>(block, " << output << ", ";
       getValue(val) << ");\n";
     }
   }
