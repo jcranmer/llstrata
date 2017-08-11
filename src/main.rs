@@ -245,21 +245,17 @@ fn assemble_llvm(ll_file: &Path, module: &llvm::Module, name: &str,
 }
 
 fn get_reg_string(mri: &llvmmc::RegisterInfo,
-                  registers: &[&str]) -> (String, String) {
-    let regs : (Vec<_>, Vec<_>) = registers.iter()
-        .map(|reg| {
-            let reg_upper = reg.to_uppercase();
-            let llreg = mri.get_register(&reg_upper);
-            if let Some(llreg) = llreg {
-                let top = llreg.get_top_register(mri);
-                if top == llreg {
-                    return (top.name, None);
-                }
-                let offset = top.get_sub_register_slice(llreg, mri)
-                    .expect("Not in top level?");
-                return (top.name, Some(offset));
+                  registers: Vec<&llvmmc::Register>, flags: Vec<String>)
+                  -> (String, String) {
+    let regs : (Vec<_>, Vec<_>) = registers.into_iter()
+        .map(|llreg| {
+            let top = llreg.get_top_register(mri);
+            if top == llreg {
+                return (top.name, None);
             }
-            return (reg, None);
+            let offset = top.get_sub_register_slice(llreg, mri)
+                .expect("Not in top level?");
+            return (top.name, Some(offset));
         }).map(|(reg, off)| (reg.to_lowercase(), off))
     .map(|(mut reg, off)| {
         if reg.starts_with("zmm") {
@@ -275,6 +271,7 @@ fn get_reg_string(mri: &llvmmc::RegisterInfo,
             (reg.clone(), reg)
         }
     })
+    .chain(flags.into_iter().map(|s| (s.clone(), s)))
     .unzip();
     let reg_str = regs.0.join(" ");
     return (reg_str, regs.1.join(" "));
@@ -282,7 +279,8 @@ fn get_reg_string(mri: &llvmmc::RegisterInfo,
 
 fn verify_equivalence(s_file: &Path, module: &llvm::Module, name: &str,
                       state: &state::State, mri: &llvmmc::RegisterInfo,
-                      in_list: &[&str], out_list: &[&str]) -> io::Result<bool> {
+                      reg_state: mcsema::RegInfo,
+                      flag_state: mcsema::FlagInfo) -> io::Result<bool> {
     // Assemble the .s code.
     let mut o_file = env::temp_dir();
     o_file.push("gold-function.o");
@@ -291,8 +289,8 @@ fn verify_equivalence(s_file: &Path, module: &llvm::Module, name: &str,
     }
 
     // Compute the read/write registers for the function.
-    let (in_regs, _) = get_reg_string(mri, &in_list);
-    let (out_regs, out_valid) = get_reg_string(mri, &out_list);
+    let (in_regs, _) = get_reg_string(mri, reg_state.0, flag_state.0);
+    let (out_regs, out_valid) = get_reg_string(mri, reg_state.1, flag_state.1);
 
     // Assemble the .ll file.
     let mut ll_file = env::temp_dir();
@@ -356,13 +354,9 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
         }
 
         // Run the test equivalence for the base program
-        fn str_to_list(s: &str) -> Vec<&str> {
-            s[1..s.len() - 1].split_whitespace()
-                .map(|n| &n[1..])
-                .collect()
-        }
-        let in_regs : Vec<_> = str_to_list(&inst.def_in);
-        let out_regs : Vec<_> = str_to_list(&inst.live_out);
+        let llvm_inst = xlation.get_llvm_instruction(&inst);
+        let registers = xlation.get_registers(&llvm_inst);
+        let flags = xlation.get_flags(&llvm_inst);
 
         // Since there's no support in asm-executor for immediate parameters,
         // this produces a spurious false positive.
@@ -381,10 +375,10 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
         }
 
         // LLVM function name
-        let func = xlation.get_function(&xlation.get_llvm_instruction(&inst));
+        let func = xlation.get_function(&llvm_inst);
         if !verify_equivalence(&s_path, &xlation.module,
                                func.get_name().unwrap(), state,
-                               mri, &in_regs, &out_regs)? {
+                               mri, registers, flags)? {
             println!("Base instruction {} failed", inst.opcode);
             panic!("die here");
         }
@@ -459,8 +453,9 @@ fn check_base(state: &mut state::State) -> io::Result<()> {
             s_file.write(&fix_shell.stdout)?;
             s_file.flush()?;
 
+            let (registers, flags) = xlation.get_registers_for_pseudo(info);
             if !verify_equivalence(&temp_s_path, &xlation.module, name, state,
-                                   mri, &info.def_in, &info.live_out)? {
+                                   mri, registers, flags)? {
                 println!("Assembly function {} failed", name);
                 panic!("die here");
             }

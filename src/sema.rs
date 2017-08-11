@@ -274,7 +274,7 @@ fn cmoveq_r64_r64(func: &Function, builder: &Builder) {
     builder.position_at_end(func.append("entry"));
     let cond = builder.build_cmp(&*func[2], false.compile(ctx),
         Predicate::Equal);
-    let val = builder.build_select(cond, &*func[1], &*func[0]);
+    let val = builder.build_select(cond, &*func[0], &*func[1]);
     let mut ret = Value::new_undef(func.get_signature().get_return());
     ret = builder.build_insert_value(ret, val, 0);
     builder.build_ret(ret);
@@ -355,8 +355,8 @@ fn popcntq_r64_r64(func: &Function, builder: &Builder) {
 fn salq_r64_cl(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
-    let cl = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
-    let rbx = &*func[1];
+    let cl = builder.build_trunc(&*func[1], Type::get::<u8>(ctx));
+    let rbx = &*func[0];
     //let in_cf = &*func[2];
     let in_pf = &*func[3];
     let in_zf = &*func[4];
@@ -409,8 +409,8 @@ fn salq_r64_cl(func: &Function, builder: &Builder) {
 fn sarq_r64_cl(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
-    let cl = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
-    let rbx = &*func[1];
+    let cl = builder.build_trunc(&*func[1], Type::get::<u8>(ctx));
+    let rbx = &*func[0];
     let in_cf = &*func[2];
     let in_pf = &*func[3];
     let in_zf = &*func[4];
@@ -454,8 +454,8 @@ fn sarq_r64_cl(func: &Function, builder: &Builder) {
 fn shrq_r64_cl(func: &Function, builder: &Builder) {
     let ctx = func.get_context();
     builder.position_at_end(func.append("entry"));
-    let cl = builder.build_trunc(&*func[0], Type::get::<u8>(ctx));
-    let rbx = &*func[1];
+    let cl = builder.build_trunc(&*func[1], Type::get::<u8>(ctx));
+    let rbx = &*func[0];
     //let in_cf = &*func[2];
     let in_pf = &*func[3];
     let in_zf = &*func[4];

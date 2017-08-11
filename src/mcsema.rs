@@ -89,7 +89,7 @@ impl <'a> TranslationState<'a> {
         return self.get_llvm_type(rc.get_registers(mri)[0], ctx);
     }
 
-    fn get_flags(&self, inst: &Instruction) -> (Vec<String>, Vec<String>) {
+    pub fn get_flags(&self, inst: &Instruction) -> (Vec<String>, Vec<String>) {
         if let Some(func) = self.get_pseudo_function(inst) {
             return self.get_registers_for_pseudo(func).1;
         }
@@ -211,7 +211,7 @@ impl <'a> TranslationState<'a> {
         return function;
     }
 
-    fn get_registers(&self, inst: &'a Instruction) -> RegInfo<'a> {
+    pub fn get_registers(&self, inst: &'a Instruction) -> RegInfo<'a> {
         if let Some(func) = self.get_pseudo_function(inst) {
             return self.get_registers_for_pseudo(func).0;
         }
@@ -321,7 +321,7 @@ impl <'a> TranslationState<'a> {
         return base.into_iter().next().unwrap();
     }
 
-    fn get_registers_for_pseudo(&self, pseudo: &FunctionInfo) -> (RegInfo<'a>, FlagInfo) {
+    pub fn get_registers_for_pseudo(&self, pseudo: &FunctionInfo) -> (RegInfo<'a>, FlagInfo) {
         let mut registers : RegInfo<'a> = Default::default();
         let mut flags : FlagInfo = Default::default();
         let mri = self.state.get_target_triple().register_info();
@@ -345,8 +345,8 @@ impl <'a> TranslationState<'a> {
     }
 }
 
-type RegInfo<'a> = (Vec<&'a Register>, Vec<&'a Register>, Option<i64>);
-type FlagInfo = (Vec<String>, Vec<String>);
+pub type RegInfo<'a> = (Vec<&'a Register>, Vec<&'a Register>, Option<i64>);
+pub type FlagInfo = (Vec<String>, Vec<String>);
 type RegState<'a> = (HashMap<&'a Register, &'a Value>,
                      HashMap<String, &'a Value>);
 
